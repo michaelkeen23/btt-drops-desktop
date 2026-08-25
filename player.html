@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>BTT Drops audio</title></head>
+<body style="background:#05070d">
+<!--
+  Hidden audio host. The main process can't play sound itself, and the visible window spends most of its
+  life closed to the tray — so alert playback lives in this window, which is never shown and never closed.
+  A fresh Audio() per play means overlapping alerts stack instead of cutting each other off.
+-->
+<script>
+  window.bdPlayer.onPlay(function (p) {
+    if (!p || !p.url) return;
+    try {
+      var a = new Audio(p.url);
+      a.volume = typeof p.volume === 'number' ? Math.max(0, Math.min(1, p.volume)) : 0.8;
+      a.play().catch(function () {});
+      a.addEventListener('ended', function () { a.src = ''; });
+    } catch (e) { /* a missing or unreadable sound file must never take the app down */ }
+  });
+</script>
+</body>
+</html>

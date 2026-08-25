@@ -1,0 +1,55 @@
+{
+  "name": "btt-drops-desktop",
+  "version": "1.0.0",
+  "description": "BTT Drops — the Ticketmaster drop checker for Windows, with native alerts and its own sound",
+  "author": "FireTickets",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "sounds": "node scripts/make-sounds.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "dist": "electron-builder --win nsis",
+    "upload": "node scripts/upload.js",
+    "release": "npm run sounds && npm run dist && npm run upload"
+  },
+  "build": {
+    "appId": "com.firetickets.bttdrops",
+    "productName": "BTT Drops",
+    "artifactName": "BTTDrops-Setup-${version}.${ext}",
+    "directories": { "output": "release" },
+    "asarUnpack": ["assets/sounds/**"],
+    "files": ["main.js", "preload.js", "settings-preload.js", "player-preload.js", "settings.html", "player.html", "offline.html", "assets/**", "package.json"],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BTT Drops",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "michaelkeen23",
+        "repo": "btt-drops-desktop",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "png-to-ico": "^2.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  }
+}

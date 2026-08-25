@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BTT Drops — Alerts &amp; Sound</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #05070d; color: #fff;
+    font: 13px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #080c15; border-bottom: 1px solid rgba(255,255,255,.1);
+  }
+  header .mark { font-size: 17px; font-weight: 900; letter-spacing: -.01em; }
+  header .mark span { color: #38bdf8; }
+  header .ver { margin-left: auto; font-size: 11px; color: rgba(255,255,255,.35); }
+  main { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  section { border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.02); border-radius: 12px; padding: 14px; }
+  h2 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.55); font-weight: 800; }
+  .hint { font-size: 11px; color: rgba(255,255,255,.4); margin-bottom: 10px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+  .row + .row { border-top: 1px solid rgba(255,255,255,.05); }
+  .row .label { flex: 1; min-width: 0; }
+  .row .label b { display: block; font-weight: 600; font-size: 13px; }
+  .row .label small { color: rgba(255,255,255,.4); font-size: 11px; }
+  .sounds { max-height: 300px; overflow-y: auto; margin: 0 -4px; }
+  .sound {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
+    padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: inherit; font: inherit;
+  }
+  .sound:hover { background: rgba(255,255,255,.04); }
+  .sound.on { background: rgba(56,189,248,.12); border-color: rgba(56,189,248,.5); }
+  .sound .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); flex: none; }
+  .sound.on .dot { border-color: #38bdf8; background: #38bdf8; box-shadow: inset 0 0 0 3px #05070d; }
+  .sound .txt { flex: 1; min-width: 0; }
+  .sound .txt b { display: block; font-weight: 600; }
+  .sound .txt small { color: rgba(255,255,255,.4); font-size: 11px; }
+  .sound .kind { font-size: 9px; font-weight: 800; letter-spacing: .04em; padding: 2px 5px; border-radius: 4px; flex: none; }
+  .kind.built-in { background: rgba(76,187,23,.2); color: #a6ef7f; }
+  .kind.windows { background: rgba(255,255,255,.1); color: rgba(255,255,255,.6); }
+  .kind.none { background: rgba(255,255,255,.06); color: rgba(255,255,255,.45); }
+  .play { flex: none; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.06); color: #fff;
+          border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .play:hover { background: rgba(255,255,255,.16); }
+  input[type=range] { width: 170px; accent-color: #38bdf8; }
+  input[type=number] { width: 66px; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.2); color: #fff;
+                       border-radius: 6px; padding: 4px 7px; font: inherit; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: #38bdf8; }
+  .btn { border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 800; cursor: pointer; }
+  .btn.primary { background: #38bdf8; color: #000; }
+  .btn.primary:hover { background: #0ea5e9; }
+  .btn.ghost { background: rgba(255,255,255,.1); color: #fff; }
+  .btn.ghost:hover { background: rgba(255,255,255,.2); }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .status { font-size: 11px; margin-left: auto; }
+  .status.ok { color: #8fe36b; } .status.bad { color: #fca5a5; }
+</style>
+</head>
+<body>
+<header>
+  <div class="mark">btt<span>/drops</span> — alerts</div>
+  <div class="ver" id="ver"></div>
+</header>
+
+<main>
+  <section>
+    <h2>Alert sound</h2>
+    <div class="hint">Pick one and it previews immediately. The top group is built for this app — nothing else on your machine sounds like them.</div>
+    <div class="sounds" id="sounds"></div>
+  </section>
+
+  <section>
+    <h2>Volume &amp; behaviour</h2>
+    <div class="row">
+      <div class="label"><b>Volume</b><small>Applies to every alert sound</small></div>
+      <input type="range" id="volume" min="0" max="100" step="5">
+      <span id="volumeLabel" style="width:38px;text-align:right;font-variant-numeric:tabular-nums"></span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Desktop notifications</b><small>Windows pop-up on every drop</small></div>
+      <input type="checkbox" id="notifications">
+    </div>
+    <div class="row">
+      <div class="label"><b>Play the sound even when the window is in front</b><small>Off = pop-up only while you're already looking at it</small></div>
+      <input type="checkbox" id="soundWhenFocused">
+    </div>
+    <div class="row">
+      <div class="label"><b>Repeat priority alerts</b><small>A ⭐ event keeps alerting until it's acknowledged</small></div>
+      <input type="checkbox" id="repeatPriority">
+    </div>
+    <div class="row">
+      <div class="label"><b>Repeat every</b><small>Seconds between repeats of an unacknowledged priority drop</small></div>
+      <input type="number" id="repeatSeconds" min="20" max="600" step="10"> <span style="color:rgba(255,255,255,.4)">sec</span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Check for drops every</b><small>How often the app polls the alert feed</small></div>
+      <input type="number" id="pollSeconds" min="5" max="120" step="5"> <span style="color:rgba(255,255,255,.4)">sec</span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Launch on startup</b><small>Start with Windows so alerts never stop</small></div>
+      <input type="checkbox" id="launchAtStartup">
+    </div>
+    <div class="row">
+      <div class="label"><b>Start minimised to the tray</b><small>No window on login — just the tray icon</small></div>
+      <input type="checkbox" id="startHidden">
+    </div>
+  </section>
+
+  <section>
+    <h2>Check it works</h2>
+    <div class="hint">Sends a real test alert through the live feed — the same path a genuine drop takes.</div>
+    <div class="bar">
+      <button class="btn primary" id="test">Send a test alert</button>
+      <button class="btn ghost" id="open">Open BTT Drops</button>
+      <button class="btn ghost" id="update">Check for updates</button>
+      <span class="status" id="status"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var state = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function setStatus(msg, ok) {
+    var el = $('status');
+    el.textContent = msg || '';
+    el.className = 'status ' + (msg ? (ok ? 'ok' : 'bad') : '');
+    if (msg) setTimeout(function () { if (el.textContent === msg) { el.textContent = ''; el.className = 'status'; } }, 6000);
+  }
+
+  function renderSounds() {
+    var wrap = $('sounds');
+    wrap.innerHTML = '';
+    state.sounds.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'sound' + (state.settings.sound === s.id ? ' on' : '');
+      row.tabIndex = 0;
+
+      var dot = document.createElement('span'); dot.className = 'dot'; row.appendChild(dot);
+      var txt = document.createElement('span'); txt.className = 'txt';
+      var b = document.createElement('b'); b.textContent = s.name; txt.appendChild(b);
+      if (s.note) { var sm = document.createElement('small'); sm.textContent = s.note; txt.appendChild(sm); }
+      row.appendChild(txt);
+
+      var kind = document.createElement('span');
+      kind.className = 'kind ' + s.kind;
+      kind.textContent = s.kind === 'built-in' ? 'BTT' : s.kind === 'windows' ? 'WINDOWS' : 'OFF';
+      row.appendChild(kind);
+
+      if (s.id !== 'none') {
+        var play = document.createElement('button');
+        play.className = 'play'; play.textContent = '▶ Play';
+        play.onclick = function (e) { e.stopPropagation(); window.bd.preview(s.id, state.settings.volume); };
+        row.appendChild(play);
+      }
+
+      var pick = function () {
+        state.settings.sound = s.id;
+        window.bd.set({ sound: s.id });
+        renderSounds();
+        if (s.id !== 'none') window.bd.preview(s.id, state.settings.volume);
+      };
+      row.onclick = pick;
+      row.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } };
+      wrap.appendChild(row);
+    });
+  }
+
+  function bindCheck(id) {
+    $(id).checked = !!state.settings[id];
+    $(id).onchange = function () { var p = {}; p[id] = $(id).checked; state.settings[id] = $(id).checked; window.bd.set(p); };
+  }
+  function bindNumber(id) {
+    $(id).value = state.settings[id];
+    $(id).onchange = function () {
+      var v = Number($(id).value);
+      if (!isFinite(v)) return;
+      var min = Number($(id).min), max = Number($(id).max);
+      v = Math.min(max, Math.max(min, v));
+      $(id).value = v; state.settings[id] = v;
+      var p = {}; p[id] = v; window.bd.set(p);
+    };
+  }
+
+  window.bd.get().then(function (s) {
+    state = s;
+    $('ver').textContent = 'v' + s.version;
+    renderSounds();
+
+    $('volume').value = Math.round((state.settings.volume || 0.8) * 100);
+    $('volumeLabel').textContent = $('volume').value + '%';
+    $('volume').oninput = function () { $('volumeLabel').textContent = $('volume').value + '%'; };
+    $('volume').onchange = function () {
+      state.settings.volume = Number($('volume').value) / 100;
+      window.bd.set({ volume: state.settings.volume });
+      window.bd.preview(state.settings.sound, state.settings.volume);
+    };
+
+    ['notifications', 'soundWhenFocused', 'repeatPriority', 'launchAtStartup', 'startHidden'].forEach(bindCheck);
+    ['repeatSeconds', 'pollSeconds'].forEach(bindNumber);
+
+    if (s.status && s.status.error) setStatus(s.status.error, false);
+  });
+
+  $('test').onclick = function () {
+    setStatus('Sending…', true);
+    window.bd.test().then(function (r) {
+      if (r && r.via === 'feed') setStatus('Test sent — the pop-up should appear within a few seconds.', true);
+      else setStatus('Showed a local test pop-up' + (r && r.error ? ' (' + r.error + ')' : '') + '.', true);
+    });
+  };
+  $('open').onclick = function () { window.bd.openDrops(); };
+  $('update').onclick = function () { window.bd.checkUpdates(); setStatus('Checking for updates…', true); };
+})();
+</script>
+</body>
+</html>
