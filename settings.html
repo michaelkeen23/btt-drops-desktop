@@ -26,7 +26,15 @@
   .row .label { flex: 1; min-width: 0; }
   .row .label b { display: block; font-weight: 600; font-size: 13px; }
   .row .label small { color: rgba(255,255,255,.4); font-size: 11px; }
-  .sounds { max-height: 300px; overflow-y: auto; margin: 0 -4px; }
+  /* Tall enough to browse: 20 sounds behind a 5-row window is not a picker, it's a keyhole. */
+  .sounds { max-height: 52vh; min-height: 260px; overflow-y: auto; margin: 0 -4px; padding-right: 4px; }
+  .sounds::-webkit-scrollbar { width: 8px; }
+  .sounds::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 4px; }
+  .sounds::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.24); }
+  .group { position: sticky; top: 0; z-index: 1; padding: 8px 10px 4px; font-size: 10px; font-weight: 800;
+           letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.45);
+           background: linear-gradient(#0a0d15 70%, rgba(10,13,21,0)); }
+  .group:first-child { padding-top: 2px; }
   .sound {
     display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
     padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: inherit; font: inherit;
@@ -73,8 +81,8 @@
   <div class="warn" id="notifWarn" style="display:none"></div>
 
   <section>
-    <h2>Alert sound</h2>
-    <div class="hint">Pick one and it previews immediately. The first group is built for this app — nothing else on your machine sounds like them.</div>
+    <h2>Alert sound <span id="soundCount" style="color:rgba(255,255,255,.3);font-weight:600"></span></h2>
+    <div class="hint">Click one and it plays straight away. The first group is built for this app — nothing else on your machine sounds like them.</div>
     <div class="sounds" id="sounds"></div>
     <div class="bar" style="margin-top:10px">
       <button class="btn ghost" id="folder">＋ Add your own sounds</button>
@@ -149,10 +157,26 @@
     if (msg) setTimeout(function () { if (el.textContent === msg) { el.textContent = ''; el.className = 'status'; } }, 6000);
   }
 
+  var GROUP_LABEL = {
+    'built-in': 'Built for BTT Drops',
+    'custom': 'Your sounds',
+    'windows': 'Standard Windows sounds',
+    'none': 'Off',
+  };
+
   function renderSounds() {
     var wrap = $('sounds');
     wrap.innerHTML = '';
+    var lastKind = null;
     state.sounds.forEach(function (s) {
+      // Headed groups, so 20 sounds read as four short lists instead of one long one.
+      if (s.kind !== lastKind) {
+        lastKind = s.kind;
+        var g = document.createElement('div');
+        g.className = 'group';
+        g.textContent = GROUP_LABEL[s.kind] || s.kind;
+        wrap.appendChild(g);
+      }
       var row = document.createElement('div');
       row.className = 'sound' + (state.settings.sound === s.id ? ' on' : '');
       row.tabIndex = 0;
@@ -186,6 +210,10 @@
       row.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } };
       wrap.appendChild(row);
     });
+    $('soundCount').textContent = '· ' + state.sounds.length + ' to choose from';
+    // Open on the one that's currently set, however far down the list it is.
+    var on = wrap.querySelector('.sound.on');
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
   }
 
   function bindCheck(id) {

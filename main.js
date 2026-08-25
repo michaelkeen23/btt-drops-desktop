@@ -470,20 +470,30 @@ function startPolling() {
 }
 
 // ── Tray ─────────────────────────────────────────────────────────────────────
+// The tray offers every sound the settings window does. The 14 app tones sit at the top level (that's
+// what people pick day to day); your own files and the ~18 Windows sounds go in nested submenus so the
+// menu stays a menu rather than a wall.
 function soundMenu() {
   const all = listSounds()
   const pick = (s) => ({
     label: s.name, type: 'radio', checked: settings.sound === s.id,
     click: () => { settings.sound = s.id; saveSettings(); playSound(); refreshTray() },
   })
-  const custom = all.filter((s) => s.kind === 'custom')
+  const of = (kind) => all.filter((s) => s.kind === kind)
+  const custom = of('custom')
+  const windows = of('windows')
   return [
-    ...all.filter((s) => s.kind === 'built-in').map(pick),
-    ...(custom.length ? [{ type: 'separator' }, { label: 'Your sounds', enabled: false }, ...custom.map(pick)] : []),
+    ...of('built-in').map(pick),
+    { type: 'separator' },
+    ...(custom.length
+      ? [{ label: `Your sounds (${custom.length})`, submenu: custom.map(pick) }]
+      : [{ label: 'Your sounds — none yet', enabled: false }]),
+    ...(windows.length ? [{ label: `Standard Windows sounds (${windows.length})`, submenu: windows.map(pick) }] : []),
+    ...of('none').map(pick),
     { type: 'separator' },
     { label: 'Test this sound', click: () => playSound() },
     { label: 'Add your own sounds…', click: () => shell.openPath(ensureCustomDir()) },
-    { label: 'Windows sounds & all settings…', click: openSettings },
+    { label: 'All alert settings…', click: openSettings },
   ]
 }
 
