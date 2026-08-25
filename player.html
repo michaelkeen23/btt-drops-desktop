@@ -13,9 +13,18 @@
     try {
       var a = new Audio(p.url);
       a.volume = typeof p.volume === 'number' ? Math.max(0, Math.min(1, p.volume)) : 0.8;
-      a.play().catch(function () {});
       a.addEventListener('ended', function () { a.src = ''; });
-    } catch (e) { /* a missing or unreadable sound file must never take the app down */ }
+      a.addEventListener('error', function () {
+        window.bdPlayer.report(false, 'cannot decode ' + p.url);
+      });
+      a.play().then(
+        function () { window.bdPlayer.report(true, null); },
+        function (e) { window.bdPlayer.report(false, (e && e.message) || 'play() rejected'); }
+      );
+    } catch (e) {
+      // A missing or unreadable sound file must never take the app down.
+      window.bdPlayer.report(false, (e && e.message) || String(e));
+    }
   });
 </script>
 </body>

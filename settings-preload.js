@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('bd', {
   test: () => ipcRenderer.invoke('bd:test'),
   openDrops: () => ipcRenderer.invoke('bd:open'),
   checkUpdates: () => ipcRenderer.invoke('bd:update'),
+  soundsFolder: () => ipcRenderer.invoke('bd:sounds-folder'),
+  osNotificationSettings: () => ipcRenderer.invoke('bd:os-notification-settings'),
 })

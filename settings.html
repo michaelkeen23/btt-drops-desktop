@@ -40,8 +40,12 @@
   .sound .txt small { color: rgba(255,255,255,.4); font-size: 11px; }
   .sound .kind { font-size: 9px; font-weight: 800; letter-spacing: .04em; padding: 2px 5px; border-radius: 4px; flex: none; }
   .kind.built-in { background: rgba(76,187,23,.2); color: #a6ef7f; }
+  .kind.custom { background: rgba(56,189,248,.2); color: #7dd3fc; }
   .kind.windows { background: rgba(255,255,255,.1); color: rgba(255,255,255,.6); }
   .kind.none { background: rgba(255,255,255,.06); color: rgba(255,255,255,.45); }
+  .warn { margin: 0 16px; padding: 10px 12px; border-radius: 10px; font-size: 12px;
+          border: 1px solid rgba(251,191,36,.35); background: rgba(251,191,36,.08); color: #fde68a; }
+  .warn button { margin-left: 8px; }
   .play { flex: none; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.06); color: #fff;
           border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 700; cursor: pointer; }
   .play:hover { background: rgba(255,255,255,.16); }
@@ -66,10 +70,16 @@
 </header>
 
 <main>
+  <div class="warn" id="notifWarn" style="display:none"></div>
+
   <section>
     <h2>Alert sound</h2>
-    <div class="hint">Pick one and it previews immediately. The top group is built for this app — nothing else on your machine sounds like them.</div>
+    <div class="hint">Pick one and it previews immediately. The first group is built for this app — nothing else on your machine sounds like them.</div>
     <div class="sounds" id="sounds"></div>
+    <div class="bar" style="margin-top:10px">
+      <button class="btn ghost" id="folder">＋ Add your own sounds</button>
+      <span class="hint" style="margin:0">Drop .wav / .mp3 files in that folder — they appear here next time you open this window.</span>
+    </div>
   </section>
 
   <section>
@@ -114,9 +124,15 @@
     <div class="hint">Sends a real test alert through the live feed — the same path a genuine drop takes.</div>
     <div class="bar">
       <button class="btn primary" id="test">Send a test alert</button>
+      <button class="btn ghost" id="osnotif">Windows notification settings</button>
       <button class="btn ghost" id="open">Open BTT Drops</button>
       <button class="btn ghost" id="update">Check for updates</button>
       <span class="status" id="status"></span>
+    </div>
+    <div class="hint" style="margin:10px 0 0">
+      No pop-up but you heard the sound? Windows is suppressing it — check
+      <b>Settings → System → Notifications</b>: notifications on, <b>BTT Drops</b> allowed, and
+      <b>Do not disturb</b> off.
     </div>
   </section>
 </main>
@@ -149,7 +165,8 @@
 
       var kind = document.createElement('span');
       kind.className = 'kind ' + s.kind;
-      kind.textContent = s.kind === 'built-in' ? 'BTT' : s.kind === 'windows' ? 'WINDOWS' : 'OFF';
+      kind.textContent = s.kind === 'built-in' ? 'BTT' : s.kind === 'custom' ? 'YOURS'
+                       : s.kind === 'windows' ? 'WINDOWS' : 'OFF';
       row.appendChild(kind);
 
       if (s.id !== 'none') {
@@ -204,7 +221,26 @@
     ['notifications', 'soundWhenFocused', 'repeatPriority', 'launchAtStartup', 'startHidden'].forEach(bindCheck);
     ['repeatSeconds', 'pollSeconds'].forEach(bindNumber);
 
-    if (s.status && s.status.error) setStatus(s.status.error, false);
+    var st = s.status || {};
+    if (st.error) setStatus(st.error, false);
+
+    // Two things silence this app that no in-app setting can fix: Windows refusing toasts outright,
+    // and the user having turned notifications off here. Say which one it is.
+    var warn = $('notifWarn');
+    var msg = null;
+    if (st.notificationsSupported === false) msg = '⚠ Windows is not accepting notifications from this app. Open Windows notification settings and allow <b>BTT Drops</b>.';
+    else if (!state.settings.notifications) msg = '⚠ Desktop notifications are switched OFF below — drops will still play a sound, but nothing will pop up.';
+    else if (st.error) msg = '⚠ ' + st.error;
+    if (msg) {
+      warn.innerHTML = msg;
+      if (st.notificationsSupported === false) {
+        var b = document.createElement('button');
+        b.className = 'btn ghost'; b.textContent = 'Open Windows settings';
+        b.onclick = function () { window.bd.osNotificationSettings(); };
+        warn.appendChild(b);
+      }
+      warn.style.display = '';
+    }
   });
 
   $('test').onclick = function () {
@@ -216,6 +252,10 @@
   };
   $('open').onclick = function () { window.bd.openDrops(); };
   $('update').onclick = function () { window.bd.checkUpdates(); setStatus('Checking for updates…', true); };
+  $('osnotif').onclick = function () { window.bd.osNotificationSettings(); };
+  $('folder').onclick = function () {
+    window.bd.soundsFolder().then(function (dir) { setStatus('Opened ' + dir + ' — drop files in, then reopen this window.', true); });
+  };
 })();
 </script>
 </body>

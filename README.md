@@ -19,6 +19,11 @@ sound you pick — window minimised, closed to the tray, or on another desktop.
 Everything else — adding events, the picker map, targets, price tiers, never-sold, Recent Drops — is the
 live web app in its own window, so there is nothing to keep in sync.
 
+**It is the drop checker and nothing else.** The site header and nav are gone (the shell tags its
+userAgent; `app/layout.tsx` + `globals.css` on the web side drop the chrome before first paint), and the
+window is pinned to `/btt/drops` — Ticketmaster links and any other page open in the real browser, and a
+stray navigation onto the rest of the site bounces straight back.
+
 ## Layout
 
 ```
@@ -61,9 +66,41 @@ npm run upload            # publish installer + latest.yml
 The website reads `downloads/bttdrops-version.json` through `/api/btt/drops/desktop`, and the
 `📥 DESKTOP APP` button on `/btt/drops` links to the stable `downloads/BTTDrops-Setup.exe`.
 
-## Adding a sound
+## Changing the sounds
 
-Add an entry to `SOUNDS` in `scripts/make-sounds.mjs`, add the matching row to `BUILT_IN` in `main.js`
-(id, display name, one-line description), then `npm run sounds`. Keep them short (< 2.5s) and let the
-normaliser handle loudness — every tone is levelled to the same peak so nothing in the picker is
-startlingly louder than its neighbour.
+Two levels, depending on who the change is for.
+
+**Just for you, no rebuild** — drop `.wav` / `.mp3` / `.ogg` / `.m4a` files into
+
+```
+%APPDATA%\btt-drops-desktop\sounds
+```
+
+(tray icon → **Alert sound → Add your own sounds…**, or the **＋ Add your own sounds** button in the
+settings window, opens it). They show up in the picker under **Your sounds** the next time the picker
+opens. Keep them under ~3 seconds so one alert doesn't talk over the next.
+
+**For everyone, shipped in the build** — add an entry to `SOUNDS` in `scripts/make-sounds.mjs`, add the
+matching row to `BUILT_IN` in `main.js` (id, display name, one-line description), run `npm run sounds`,
+then publish. Let the normaliser handle loudness: every tone is levelled to the same peak so nothing in
+the picker is startlingly louder than its neighbour.
+
+## When it pops up but stays silent
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\btt-drops-desktop\BTT Drops.exe" --selftest-sound
+```
+
+Prints the configured sound, the file it resolves to, and whether the audio host actually played it, then
+exits. The audio lives in a hidden window with `backgroundThrottling: false`, `autoplayPolicy:
+no-user-gesture-required`, and the three Chromium background-throttling switches disabled in `main.js` —
+so it plays with the window minimised or in the tray. Playback failures are reported back over IPC and
+surfaced in the settings window.
+
+## When it makes a sound but nothing pops up
+
+That's Windows, not the app. **Settings → System → Notifications**: notifications on, **BTT Drops**
+allowed, **Do not disturb** off. The settings window has a button that opens that page directly, and warns
+up front if `Notification.isSupported()` is false. Toasts are keyed off the AppUserModelID
+(`com.firetickets.bttdrops`), which must match the installer's Start Menu shortcut — it does, via
+`build.nsis.shortcutName`.

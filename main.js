@@ -26,6 +26,17 @@ const UA_TAG = () => 'BTTDropsDesktop/' + app.getVersion()
 const POLL_MIN_MS = 5000
 const POLL_MAX_MS = 120000
 
+// The alert sound has to fire with the window minimised or hidden in the tray, which is exactly when
+// Chromium wants to throttle and suspend a renderer. The audio host is a hidden window, so say no to all
+// three of the mechanisms that would silence it. (The POLLER itself lives in the main process, whose
+// timers are never throttled — this is only about the audio renderer.)
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
+// Windows keys toasts off the AppUserModelID. It must match the installer's shortcut or notifications are
+// silently dropped, which is the classic "the app works but nothing ever pops up" failure.
 app.setAppUserModelId(APP_ID)
 
 // ── State / persistence ──────────────────────────────────────────────────────
@@ -41,6 +52,7 @@ let lastError = null
 let lastPollAt = 0
 let nagTimer = null
 let nagging = null          // { alert, until } — priority alert still un-acknowledged
+let signInPrompted = false  // "sign in" toast is shown once per signed-out streak, not every poll
 
 const DEFAULTS = {
   notifications: true,
@@ -126,10 +138,45 @@ const WINDOWS_SOUNDS = [
   ['tada.wav', 'Windows Tada'],
 ]
 
+// Your own sounds. Anything dropped in %APPDATA%\btt-drops-desktop\sounds shows up in the picker on the
+// next open — no rebuild, no reinstall. This is the answer to "where do I change the sounds": for a
+// one-off, put a file here; to change what everyone gets, edit scripts/make-sounds.mjs and ship a build.
+const CUSTOM_EXT = new Set(['.wav', '.mp3', '.ogg', '.m4a', '.flac', '.aac'])
+const customDir = () => path.join(app.getPath('userData'), 'sounds')
+function ensureCustomDir() {
+  const dir = customDir()
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'README.txt'),
+        'Drop .wav / .mp3 / .ogg / .m4a files in this folder and they appear in\r\n'
+        + 'BTT Drops under "Your sounds" (tray icon -> Alert sound, or the settings window).\r\n\r\n'
+        + 'Keep them short - under about 3 seconds - so an alert does not talk over the next one.\r\n')
+    }
+  } catch (_) {}
+  return dir
+}
+function listCustomSounds() {
+  const dir = customDir()
+  let names = []
+  try { names = fs.readdirSync(dir) } catch (_) { return [] }
+  return names
+    .filter((n) => CUSTOM_EXT.has(path.extname(n).toLowerCase()))
+    .sort((a, b) => a.localeCompare(b))
+    .map((n) => ({
+      id: 'custom:' + n,
+      name: path.basename(n, path.extname(n)),
+      note: 'Your sound · ' + path.extname(n).slice(1).toUpperCase(),
+      kind: 'custom',
+      file: path.join(dir, n),
+    }))
+}
+
 function listSounds() {
   const out = BUILT_IN
     .filter(([id]) => fs.existsSync(path.join(soundsDir(), id + '.wav')))
     .map(([id, name, note]) => ({ id, name, note, kind: 'built-in', file: path.join(soundsDir(), id + '.wav') }))
+  out.push(...listCustomSounds())
   for (const [file, name] of WINDOWS_SOUNDS) {
     const p = path.join(WINDOWS_MEDIA, file)
     if (fs.existsSync(p)) out.push({ id: 'win:' + file, name, note: 'Standard Windows sound', kind: 'windows', file: p })
@@ -140,9 +187,14 @@ function listSounds() {
 
 function soundPath(id) {
   if (!id || id === 'none') return null
-  if (id.startsWith('win:')) { const p = path.join(WINDOWS_MEDIA, id.slice(4)); return fs.existsSync(p) ? p : null }
-  const p = path.join(soundsDir(), id + '.wav')
-  return fs.existsSync(p) ? p : null
+  let p
+  if (id.startsWith('win:')) p = path.join(WINDOWS_MEDIA, id.slice(4))
+  else if (id.startsWith('custom:')) p = path.join(customDir(), id.slice(7))
+  else p = path.join(soundsDir(), id + '.wav')
+  if (fs.existsSync(p)) return p
+  // A custom sound that was renamed or deleted must not leave the app silent on the next drop.
+  if (id !== DEFAULTS.sound) { const fb = path.join(soundsDir(), DEFAULTS.sound + '.wav'); if (fs.existsSync(fb)) return fb }
+  return null
 }
 
 // The audio lives in a hidden renderer: Electron's main process can't play sound itself, and routing it
@@ -153,19 +205,27 @@ function ensurePlayer() {
     show: false, width: 200, height: 100, skipTaskbar: true,
     webPreferences: {
       preload: path.join(__dirname, 'player-preload.js'),
-      nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
+      nodeIntegration: false, contextIsolation: true,
+      backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required',   // no click has ever happened in this window
     },
   })
   player.loadFile(path.join(__dirname, 'player.html'))
+  // If the audio host ever dies (renderer crash, OOM), rebuild it so the next drop still makes a noise.
+  player.webContents.on('render-process-gone', () => { try { player.destroy() } catch (_) {} ; player = null })
   return player
 }
 
+let lastSoundError = null
+let soundProbe = null       // one-shot callback used by --selftest-sound
 function playSound(id, volume) {
-  const file = soundPath(id === undefined ? settings.sound : id)
-  if (!file) return
+  const wanted = id === undefined ? settings.sound : id
+  if (wanted === 'none') return
+  const file = soundPath(wanted)
+  if (!file) { lastSoundError = 'sound file missing: ' + wanted; return }
   const vol = typeof volume === 'number' ? volume : (Number(settings.volume) || 0.8)
   const p = ensurePlayer()
-  const send = () => { try { p.webContents.send('play', { url: 'file://' + file.replace(/\\/g, '/'), volume: Math.max(0, Math.min(1, vol)) }) } catch (_) {} }
+  const send = () => { try { p.webContents.send('play', { url: 'file://' + file.replace(/\\/g, '/'), volume: Math.max(0, Math.min(1, vol)) }) } catch (e) { lastSoundError = e.message } }
   if (p.webContents.isLoading()) p.webContents.once('did-finish-load', send)
   else send()
 }
@@ -182,6 +242,19 @@ function trayIcon() {
 }
 
 // ── Window ───────────────────────────────────────────────────────────────────
+// The only pages this window is allowed to be on: the drop checker itself, and whatever is needed to
+// sign in to it. Everything else is somebody else's page and belongs in a browser.
+const IN_APP_PATHS = [/^\/btt\/drops(\/|$|\?)/, /^\/btt\/settings(\/|$|\?)/, /^\/login/, /^\/signin/, /^\/auth\//, /^\/no-access/]
+function isOurHost(url) {
+  try { return new URL(url).host === new URL(APP_URL).host } catch (_) { return false }
+}
+function isAppUrl(url) {
+  try {
+    const u = new URL(url)
+    return isOurHost(url) && IN_APP_PATHS.some((re) => re.test(u.pathname + u.search))
+  } catch (_) { return false }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 860, minWidth: 900, minHeight: 600,
@@ -204,13 +277,27 @@ function createWindow() {
   win.loadURL(APP_URL, { userAgent: ua })
   win.once('ready-to-show', () => { if (!process.argv.includes('--hidden')) win.show() })
 
-  // Anything that isn't firetickets.ai (Ticketmaster links, mostly) opens in the real browser, where the
-  // user is already signed in to TM.
+  // This app is the BTT drop checker and nothing else. Ticketmaster links, and any other part of the
+  // FireTickets site the page might link to, open in the real browser — the window itself never leaves
+  // the drop checker, so there is no way to end up somewhere that wants site navigation.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      if (new URL(url).host !== new URL(APP_URL).host) { shell.openExternal(url); return { action: 'deny' } }
-    } catch (_) {}
-    return { action: 'allow' }
+    if (isAppUrl(url)) return { action: 'allow' }
+    if (!isOurHost(url)) shell.openExternal(url)
+    else showWindow(APP_URL)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-navigate', (e, url) => {
+    if (isAppUrl(url)) return
+    e.preventDefault()
+    // Our own site, just not the drop checker (the logo, a stray link, a post-login bounce to "/"):
+    // come straight back rather than opening a browser tab for it.
+    if (isOurHost(url)) win.loadURL(APP_URL, { userAgent: win.webContents.getUserAgent() })
+    else shell.openExternal(url)
+  })
+  // Server-side redirects don't go through will-navigate. If one lands us off the drop checker (e.g. a
+  // login flow that forgets `next`), bounce back.
+  win.webContents.on('did-navigate', (_e, url) => {
+    if (!isAppUrl(url) && isOurHost(url)) win.loadURL(APP_URL, { userAgent: win.webContents.getUserAgent() })
   })
 
   win.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => {
@@ -342,7 +429,19 @@ async function poll() {
       ? `${BASE_URL}/api/btt/drops/popup?since=${cursor}`
       : `${BASE_URL}/api/btt/drops/popup`
     const res = await apiFetch(url)
-    if (res.status === 403) { lastError = 'Not signed in as a BTT user — open the window and log in.'; refreshTray(); return }
+    if (res.status === 403 || res.status === 401) {
+      lastError = 'Not signed in as a BTT user — open the window and log in.'
+      // Say so once, out loud. Otherwise the app looks like it's working and silently never alerts —
+      // the single most likely reason someone reports "I never get notifications".
+      if (!signInPrompted && Notification.isSupported()) {
+        signInPrompted = true
+        const n = new Notification({ title: 'BTT Drops — sign in to start alerts', body: 'Open BTT Drops and log in with your FireTickets account. Nothing will alert until you do.', icon: appIcon() })
+        n.on('click', () => showWindow(APP_URL))
+        n.show()
+      }
+      refreshTray(); return
+    }
+    signInPrompted = false
     if (!res.ok) { lastError = 'Feed HTTP ' + res.status; return }
     const j = await res.json()
     lastError = null
@@ -372,17 +471,19 @@ function startPolling() {
 
 // ── Tray ─────────────────────────────────────────────────────────────────────
 function soundMenu() {
-  const items = listSounds().map((s) => ({
-    label: s.name,
-    type: 'radio',
-    checked: settings.sound === s.id,
+  const all = listSounds()
+  const pick = (s) => ({
+    label: s.name, type: 'radio', checked: settings.sound === s.id,
     click: () => { settings.sound = s.id; saveSettings(); playSound(); refreshTray() },
-  }))
+  })
+  const custom = all.filter((s) => s.kind === 'custom')
   return [
-    ...items.slice(0, 15),
+    ...all.filter((s) => s.kind === 'built-in').map(pick),
+    ...(custom.length ? [{ type: 'separator' }, { label: 'Your sounds', enabled: false }, ...custom.map(pick)] : []),
     { type: 'separator' },
-    { label: 'More sounds & settings…', click: openSettings },
     { label: 'Test this sound', click: () => playSound() },
+    { label: 'Add your own sounds…', click: () => shell.openPath(ensureCustomDir()) },
+    { label: 'Windows sounds & all settings…', click: openSettings },
   ]
 }
 
@@ -416,6 +517,7 @@ function buildTrayMenu() {
     { label: 'Launch on startup', type: 'checkbox', checked: getOpenAtLogin(), click: (mi) => setOpenAtLogin(mi.checked) },
     { type: 'separator' },
     { label: 'Send a test alert', click: () => sendTestAlert() },
+    { label: 'Windows notification settings…', click: () => shell.openExternal('ms-settings:notifications') },
     { label: 'Check for updates…', click: () => checkForUpdates(true) },
     { label: 'Quit BTT Drops', click: () => { isQuiting = true; app.quit() } },
   ])
@@ -480,8 +582,21 @@ ipcMain.handle('bd:get', () => ({
   settings,
   sounds: listSounds().map(({ id, name, note, kind }) => ({ id, name, note, kind })),
   version: app.getVersion(),
-  status: { error: lastError, lastPollAt, cursor, baselined, openAtLogin: getOpenAtLogin() },
+  soundsFolder: customDir(),
+  status: {
+    error: lastError,
+    soundError: lastSoundError,
+    lastPollAt,
+    cursor,
+    baselined,
+    openAtLogin: getOpenAtLogin(),
+    // If Windows itself can't show toasts, no amount of app configuration will help — surface it.
+    notificationsSupported: Notification.isSupported(),
+  },
 }))
+ipcMain.handle('bd:sounds-folder', () => { shell.openPath(ensureCustomDir()); return customDir() })
+// Deep-links straight into the Windows page where this app can be re-enabled / un-muted.
+ipcMain.handle('bd:os-notification-settings', () => { shell.openExternal('ms-settings:notifications'); return true })
 ipcMain.handle('bd:set', (_e, patch) => {
   if (patch && typeof patch === 'object') {
     const before = settings.pollSeconds
@@ -508,6 +623,10 @@ ipcMain.on('bd:notify', (_e, p) => {
 })
 ipcMain.on('bd:acknowledged', (_e, hex) => stopNag(hex))
 ipcMain.on('bd:open-settings', () => openSettings())
+ipcMain.on('bd:sound-report', (_e, r) => {
+  lastSoundError = r && r.ok ? null : ((r && r.error) || 'playback failed')
+  if (soundProbe) { soundProbe(r); soundProbe = null }
+})
 
 // ── App lifecycle ────────────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
@@ -518,6 +637,23 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     loadSettings()
+    ensureCustomDir()
+
+    // `BTT Drops.exe --selftest-sound` — play the configured alert, print whether the audio host
+    // actually managed it, and exit. For diagnosing a machine that pops up but stays silent.
+    if (process.argv.includes('--selftest-sound')) {
+      ensurePlayer()
+      const chosen = listSounds().find((s) => s.id === settings.sound)
+      console.log('sound       :', settings.sound, chosen ? `(${chosen.name})` : '(unknown id)')
+      console.log('resolves to :', soundPath(settings.sound) || 'NOTHING')
+      console.log('volume      :', settings.volume)
+      const done = (r) => { console.log('playback    :', r && r.ok ? 'OK' : 'FAILED — ' + ((r && r.error) || 'no response')); app.exit(r && r.ok ? 0 : 1) }
+      soundProbe = done
+      setTimeout(() => playSound(), 400)
+      setTimeout(() => done(null), 8000)
+      return
+    }
+
     if (settings.launchAtStartup && !getOpenAtLogin()) setOpenAtLogin(true)
 
     createWindow()

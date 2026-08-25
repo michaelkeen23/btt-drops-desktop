@@ -1,6 +1,6 @@
 {
   "name": "btt-drops-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "BTT Drops — the Ticketmaster drop checker for Windows, with native alerts and its own sound",
   "author": "FireTickets",
   "license": "UNLICENSED",
@@ -18,11 +18,27 @@
     "appId": "com.firetickets.bttdrops",
     "productName": "BTT Drops",
     "artifactName": "BTTDrops-Setup-${version}.${ext}",
-    "directories": { "output": "release" },
-    "asarUnpack": ["assets/sounds/**"],
-    "files": ["main.js", "preload.js", "settings-preload.js", "player-preload.js", "settings.html", "player.html", "offline.html", "assets/**", "package.json"],
+    "directories": {
+      "output": "release"
+    },
+    "asarUnpack": [
+      "assets/sounds/**"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "settings-preload.js",
+      "player-preload.js",
+      "settings.html",
+      "player.html",
+      "offline.html",
+      "assets/**",
+      "package.json"
+    ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {
