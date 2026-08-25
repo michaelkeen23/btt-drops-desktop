@@ -1,6 +1,6 @@
 {
   "name": "btt-drops-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "BTT Drops — the Ticketmaster drop checker for Windows, with native alerts and its own sound",
   "author": "FireTickets",
   "license": "UNLICENSED",
@@ -49,7 +49,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "BTT Drops",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
     },
     "publish": [
       {

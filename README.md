@@ -85,6 +85,25 @@ matching row to `BUILT_IN` in `main.js` (id, display name, one-line description)
 then publish. Let the normaliser handle loudness: every tone is levelled to the same peak so nothing in
 the picker is startlingly louder than its neighbour.
 
+## Updating
+
+**Update from inside the app** — tray icon → **Check for updates…**, or click the "ready to install"
+notification. The app quits itself and hands over to the installer, so nothing is holding files open. This
+is the path that always works.
+
+Running a downloaded installer by hand over a *live* app is the awkward one, because BTT Drops lives in
+the tray and its window is coded to hide rather than close. electron-builder's stock check asks the window
+to close, our window refuses by design, and you get:
+
+> BTT Drops cannot be closed. Please close it manually and click Retry.
+
+…with nothing visible to close, followed by *"failed to uninstall old application files"* because the
+running process still holds them open. `build/installer.nsh` fixes this by terminating the app outright in
+`preInit` / `customInit` / `customUnInit` before anything else happens. Nothing is lost — the app is a
+shell around the live page and its settings live in `%APPDATA%`, which an upgrade never touches.
+
+To close it by hand: **right-click the tray icon → Quit BTT Drops**, or `taskkill /F /IM "BTT Drops.exe" /T`.
+
 ## When it pops up but stays silent
 
 ```powershell

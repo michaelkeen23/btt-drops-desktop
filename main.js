@@ -516,9 +516,10 @@ function buildTrayMenu() {
     { label: 'Repeat priority alerts', type: 'checkbox', checked: !!settings.repeatPriority, click: (mi) => { settings.repeatPriority = mi.checked; saveSettings(); if (!mi.checked) stopNag() } },
     { label: 'Launch on startup', type: 'checkbox', checked: getOpenAtLogin(), click: (mi) => setOpenAtLogin(mi.checked) },
     { type: 'separator' },
+    ...(updateReady ? [{ label: `⬆ Restart & install ${updateReady}`, click: installUpdateNow }] : []),
     { label: 'Send a test alert', click: () => sendTestAlert() },
     { label: 'Windows notification settings…', click: () => shell.openExternal('ms-settings:notifications') },
-    { label: 'Check for updates…', click: () => checkForUpdates(true) },
+    { label: updateReady ? 'Update ready — restart to install' : 'Check for updates…', click: () => checkForUpdates(true) },
     { label: 'Quit BTT Drops', click: () => { isQuiting = true; app.quit() } },
   ])
 }
@@ -565,15 +566,46 @@ async function sendTestAlert() {
 }
 
 // ── Updates ──────────────────────────────────────────────────────────────────
+//
+// Updating from inside the app is the path that WORKS cleanly, and it should be the normal one: the app
+// quits itself and hands over to the installer, so nothing is holding files open. Running the downloaded
+// installer by hand against a live tray app is the awkward case (see build/installer.nsh).
+let updateReady = null   // the downloaded version, waiting for a restart
+
+function installUpdateNow() {
+  if (!autoUpdater || !updateReady) return
+  isQuiting = true
+  stopNag()
+  try { autoUpdater.quitAndInstall(false, true) } catch (_) { app.quit() }
+}
+
+function wireUpdater() {
+  if (!autoUpdater) return
+  autoUpdater.autoDownload = true
+  autoUpdater.on('update-downloaded', (info) => {
+    updateReady = (info && info.version) || 'a new version'
+    refreshTray()
+    if (!Notification.isSupported()) return
+    const n = new Notification({
+      title: `BTT Drops ${updateReady} is ready`,
+      body: 'Click to restart and install. Takes a couple of seconds — no installer to run by hand.',
+      icon: appIcon(),
+      silent: true,
+    })
+    n.on('click', installUpdateNow)
+    n.show()
+  })
+}
+
 function checkForUpdates(interactive) {
   if (!autoUpdater) { if (interactive) dialog.showMessageBox({ message: 'Updates are only available in the installed build.' }); return }
+  if (updateReady) { if (interactive) installUpdateNow(); return }
   try {
-    autoUpdater.autoDownload = true
     if (interactive) {
       autoUpdater.once('update-not-available', () => dialog.showMessageBox({ message: `BTT Drops ${app.getVersion()} is the latest version.` }))
       autoUpdater.once('error', (e) => dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: String((e && e.message) || e) }))
     }
-    autoUpdater.checkForUpdatesAndNotify()
+    autoUpdater.checkForUpdates()
   } catch (_) {}
 }
 
@@ -664,6 +696,7 @@ if (!gotLock) {
     if (process.argv.includes('--hidden') && win) win.hide()
 
     if (autoUpdater) {
+      wireUpdater()
       checkForUpdates(false)
       setInterval(() => checkForUpdates(false), 6 * 60 * 60 * 1000)
     }
@@ -673,4 +706,7 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => { /* keep running in the tray */ })
   app.on('before-quit', () => { isQuiting = true })
+  // Windows signing off (shutdown, restart, log off) is NOT a "hide to the tray" close — go away properly
+  // instead of blocking the shutdown and being killed.
+  app.on('session-end', () => { isQuiting = true; try { app.exit(0) } catch (_) {} })
 }
