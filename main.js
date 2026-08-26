@@ -272,6 +272,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: true,
+      // The preload is sandboxed and cannot require product.js, so hand it the bridge name here. Keeping
+      // the sandbox is the point: this window loads a remote origin.
+      additionalArguments: ['--bridge=' + PRODUCT.bridgeName],
     },
   })
   win.setMenuBarVisibility(false)
@@ -634,7 +637,7 @@ ipcMain.handle('bd:get', () => ({
   version: app.getVersion(),
   soundsFolder: customDir(),
   // Branding for the settings window, so that file stays shared between the two apps too.
-  product: { name: PRODUCT.productName, shortName: PRODUCT.shortName, accent: PRODUCT.accent },
+  product: { name: PRODUCT.productName, shortName: PRODUCT.shortName, accent: PRODUCT.accent, soundBadge: PRODUCT.soundBadge },
   status: {
     error: lastError,
     soundError: lastSoundError,

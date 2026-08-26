@@ -25,6 +25,9 @@ module.exports = {
   // off-host opens in the real browser.
   inAppPaths: [/^\/btt\/drops(\/|$|\?)/, /^\/btt\/settings(\/|$|\?)/, /^\/login/, /^\/signin/, /^\/auth\//, /^\/no-access/],
 
+  // Short tag on the built-in sounds in the picker.
+  soundBadge: 'BTT',
+
   accent: '#38bdf8',
   background: '#05070d',
 

@@ -189,7 +189,7 @@
 
       var kind = document.createElement('span');
       kind.className = 'kind ' + s.kind;
-      kind.textContent = s.kind === 'built-in' ? 'BTT' : s.kind === 'custom' ? 'YOURS'
+      kind.textContent = s.kind === 'built-in' ? (state.badge || 'APP') : s.kind === 'custom' ? 'YOURS'
                        : s.kind === 'windows' ? 'WINDOWS' : 'OFF';
       row.appendChild(kind);
 
@@ -235,6 +235,7 @@
   window.bd.get().then(function (s) {
     state = s;
     var p = s.product || { name: 'Drop checker', shortName: 'drops', accent: '#38bdf8' };
+    state.badge = p.soundBadge || 'APP';
     document.title = p.name + ' — Alerts & Sound';
     // shortName is "btt/drops" / "fireseats/drops": colour the half after the slash with the accent.
     var parts = String(p.shortName || p.name).split('/');
