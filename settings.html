@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>BTT Drops — Alerts &amp; Sound</title>
+<title>Alerts &amp; Sound</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --accent: #38bdf8; }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: #05070d; color: #fff;
@@ -15,7 +15,7 @@
     padding: 12px 16px; background: #080c15; border-bottom: 1px solid rgba(255,255,255,.1);
   }
   header .mark { font-size: 17px; font-weight: 900; letter-spacing: -.01em; }
-  header .mark span { color: #38bdf8; }
+  header .mark span { color: var(--accent); }
   header .ver { margin-left: auto; font-size: 11px; color: rgba(255,255,255,.35); }
   main { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   section { border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.02); border-radius: 12px; padding: 14px; }
@@ -40,15 +40,15 @@
     padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: inherit; font: inherit;
   }
   .sound:hover { background: rgba(255,255,255,.04); }
-  .sound.on { background: rgba(56,189,248,.12); border-color: rgba(56,189,248,.5); }
+  .sound.on { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
   .sound .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); flex: none; }
-  .sound.on .dot { border-color: #38bdf8; background: #38bdf8; box-shadow: inset 0 0 0 3px #05070d; }
+  .sound.on .dot { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px #05070d; }
   .sound .txt { flex: 1; min-width: 0; }
   .sound .txt b { display: block; font-weight: 600; }
   .sound .txt small { color: rgba(255,255,255,.4); font-size: 11px; }
   .sound .kind { font-size: 9px; font-weight: 800; letter-spacing: .04em; padding: 2px 5px; border-radius: 4px; flex: none; }
   .kind.built-in { background: rgba(76,187,23,.2); color: #a6ef7f; }
-  .kind.custom { background: rgba(56,189,248,.2); color: #7dd3fc; }
+  .kind.custom { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
   .kind.windows { background: rgba(255,255,255,.1); color: rgba(255,255,255,.6); }
   .kind.none { background: rgba(255,255,255,.06); color: rgba(255,255,255,.45); }
   .warn { margin: 0 16px; padding: 10px 12px; border-radius: 10px; font-size: 12px;
@@ -57,13 +57,13 @@
   .play { flex: none; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.06); color: #fff;
           border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 700; cursor: pointer; }
   .play:hover { background: rgba(255,255,255,.16); }
-  input[type=range] { width: 170px; accent-color: #38bdf8; }
+  input[type=range] { width: 170px; accent-color: var(--accent); }
   input[type=number] { width: 66px; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.2); color: #fff;
                        border-radius: 6px; padding: 4px 7px; font: inherit; }
-  input[type=checkbox] { width: 16px; height: 16px; accent-color: #38bdf8; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
   .btn { border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 800; cursor: pointer; }
-  .btn.primary { background: #38bdf8; color: #000; }
-  .btn.primary:hover { background: #0ea5e9; }
+  .btn.primary { background: var(--accent); color: #000; }
+  .btn.primary:hover { filter: brightness(1.12); }
   .btn.ghost { background: rgba(255,255,255,.1); color: #fff; }
   .btn.ghost:hover { background: rgba(255,255,255,.2); }
   .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -73,7 +73,7 @@
 </head>
 <body>
 <header>
-  <div class="mark">btt<span>/drops</span> — alerts</div>
+  <div class="mark" id="mark">— alerts</div>
   <div class="ver" id="ver"></div>
 </header>
 
@@ -133,13 +133,13 @@
     <div class="bar">
       <button class="btn primary" id="test">Send a test alert</button>
       <button class="btn ghost" id="osnotif">Windows notification settings</button>
-      <button class="btn ghost" id="open">Open BTT Drops</button>
+      <button class="btn ghost" id="open">Open drop checker</button>
       <button class="btn ghost" id="update">Check for updates</button>
       <span class="status" id="status"></span>
     </div>
     <div class="hint" style="margin:10px 0 0">
       No pop-up but you heard the sound? Windows is suppressing it — check
-      <b>Settings → System → Notifications</b>: notifications on, <b>BTT Drops</b> allowed, and
+      <b>Settings → System → Notifications</b>: notifications on, <b id="allowName">this app</b> allowed, and
       <b>Do not disturb</b> off.
     </div>
   </section>
@@ -158,7 +158,7 @@
   }
 
   var GROUP_LABEL = {
-    'built-in': 'Built for BTT Drops',
+    'built-in': 'Built for this app',
     'custom': 'Your sounds',
     'windows': 'Standard Windows sounds',
     'none': 'Off',
@@ -234,6 +234,17 @@
 
   window.bd.get().then(function (s) {
     state = s;
+    var p = s.product || { name: 'Drop checker', shortName: 'drops', accent: '#38bdf8' };
+    document.title = p.name + ' — Alerts & Sound';
+    // shortName is "btt/drops" / "fireseats/drops": colour the half after the slash with the accent.
+    var parts = String(p.shortName || p.name).split('/');
+    $('mark').innerHTML = parts.length > 1
+      ? parts[0] + '<span>/' + parts.slice(1).join('/') + '</span> — alerts'
+      : p.name + ' — alerts';
+    document.documentElement.style.setProperty('--accent', p.accent || '#38bdf8');
+    $('open').textContent = 'Open ' + p.name;
+    var an = $('allowName'); if (an) an.textContent = p.name;
+    GROUP_LABEL['built-in'] = 'Built for ' + p.name;
     $('ver').textContent = 'v' + s.version;
     renderSounds();
 

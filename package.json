@@ -1,6 +1,6 @@
 {
   "name": "btt-drops-desktop",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "BTT Drops — the Ticketmaster drop checker for Windows, with native alerts and its own sound",
   "author": "FireTickets",
   "license": "UNLICENSED",
@@ -26,6 +26,7 @@
     ],
     "files": [
       "main.js",
+      "product.js",
       "preload.js",
       "settings-preload.js",
       "player-preload.js",

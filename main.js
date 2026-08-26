@@ -1,4 +1,7 @@
-// BTT Drops Desktop — Electron shell around https://www.firetickets.ai/btt/drops.
+// Drop-checker desktop shell — an Electron window around a FireTickets drop-checker page.
+//
+// SHARED FILE. This is byte-identical between btt-drops-desktop and fireseats-drops-desktop; everything
+// product-specific lives in product.js. Copy it across verbatim when fixing something, don't hand-port.
 //
 // The web page already has an on-site pop-up, but a browser tab can only shout at you while it is open,
 // focused-ish, and allowed to autoplay audio. This app exists to fix exactly that: it polls the same
@@ -8,21 +11,22 @@
 //   • own window + taskbar/tray icon, close-to-tray, launch-at-startup, single instance
 //   • native drop notifications with a selectable alert sound (bundled + Windows system sounds)
 //   • priority drops can re-alert until acknowledged
-//   • Mute 2h / Delete straight from the notification actions
-//   • silent auto-update from the same Storage bucket the installer comes from
+//   • Mute 2h straight from the notification actions
+//   • silent auto-update from the GitHub release the installer came from
 
 const { app, BrowserWindow, Tray, Menu, nativeImage, shell, Notification, ipcMain, session, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const PRODUCT = require('./product')
 
 let autoUpdater = null
 try { autoUpdater = require('electron-updater').autoUpdater } catch (_) { /* not packaged in dev */ }
 
 // ── Config ───────────────────────────────────────────────────────────────────
-const BASE_URL = 'https://www.firetickets.ai'
-const APP_URL = BASE_URL + '/btt/drops'
-const APP_ID = 'com.firetickets.bttdrops'
-const UA_TAG = () => 'BTTDropsDesktop/' + app.getVersion()
+const BASE_URL = PRODUCT.baseUrl
+const APP_URL = BASE_URL + PRODUCT.appPath
+const APP_ID = PRODUCT.appId
+const UA_TAG = () => PRODUCT.uaTag + '/' + app.getVersion()
 const POLL_MIN_MS = 5000
 const POLL_MAX_MS = 120000
 
@@ -138,8 +142,8 @@ const WINDOWS_SOUNDS = [
   ['tada.wav', 'Windows Tada'],
 ]
 
-// Your own sounds. Anything dropped in %APPDATA%\btt-drops-desktop\sounds shows up in the picker on the
-// next open — no rebuild, no reinstall. This is the answer to "where do I change the sounds": for a
+// Your own sounds. Anything dropped in this app's own %APPDATA% "sounds" folder shows up in the picker on
+// the next open — no rebuild, no reinstall. This is the answer to "where do I change the sounds": for a
 // one-off, put a file here; to change what everyone gets, edit scripts/make-sounds.mjs and ship a build.
 const CUSTOM_EXT = new Set(['.wav', '.mp3', '.ogg', '.m4a', '.flac', '.aac'])
 const customDir = () => path.join(app.getPath('userData'), 'sounds')
@@ -150,7 +154,7 @@ function ensureCustomDir() {
       fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(path.join(dir, 'README.txt'),
         'Drop .wav / .mp3 / .ogg / .m4a files in this folder and they appear in\r\n'
-        + 'BTT Drops under "Your sounds" (tray icon -> Alert sound, or the settings window).\r\n\r\n'
+        + PRODUCT.productName + ' under "Your sounds" (tray icon -> Alert sound, or the settings window).\r\n\r\n'
         + 'Keep them short - under about 3 seconds - so an alert does not talk over the next one.\r\n')
     }
   } catch (_) {}
@@ -244,7 +248,7 @@ function trayIcon() {
 // ── Window ───────────────────────────────────────────────────────────────────
 // The only pages this window is allowed to be on: the drop checker itself, and whatever is needed to
 // sign in to it. Everything else is somebody else's page and belongs in a browser.
-const IN_APP_PATHS = [/^\/btt\/drops(\/|$|\?)/, /^\/btt\/settings(\/|$|\?)/, /^\/login/, /^\/signin/, /^\/auth\//, /^\/no-access/]
+const IN_APP_PATHS = PRODUCT.inAppPaths
 function isOurHost(url) {
   try { return new URL(url).host === new URL(APP_URL).host } catch (_) { return false }
 }
@@ -258,8 +262,8 @@ function isAppUrl(url) {
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 860, minWidth: 900, minHeight: 600,
-    backgroundColor: '#05070d',
-    title: 'BTT Drops',
+    backgroundColor: PRODUCT.background,
+    title: PRODUCT.productName,
     icon: appIcon(),
     autoHideMenuBar: true,
     show: false,
@@ -277,7 +281,7 @@ function createWindow() {
   win.loadURL(APP_URL, { userAgent: ua })
   win.once('ready-to-show', () => { if (!process.argv.includes('--hidden')) win.show() })
 
-  // This app is the BTT drop checker and nothing else. Ticketmaster links, and any other part of the
+  // This app is ONE drop checker and nothing else. Ticketmaster links, and any other part of the
   // FireTickets site the page might link to, open in the real browser — the window itself never leaves
   // the drop checker, so there is no way to end up somewhere that wants site navigation.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -322,7 +326,7 @@ function openSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return }
   settingsWin = new BrowserWindow({
     width: 620, height: 760, minWidth: 480, minHeight: 520,
-    backgroundColor: '#05070d', title: 'BTT Drops — Alerts & Sound',
+    backgroundColor: PRODUCT.background, title: `${PRODUCT.productName} — Alerts & Sound`,
     icon: appIcon(), autoHideMenuBar: true, parent: undefined, show: false,
     webPreferences: { preload: path.join(__dirname, 'settings-preload.js'), contextIsolation: true, nodeIntegration: false },
   })
@@ -414,7 +418,7 @@ async function apiFetch(url, init) {
 
 async function postAction(a, hex) {
   try {
-    await apiFetch(BASE_URL + '/api/btt/drops/action', {
+    await apiFetch(BASE_URL + PRODUCT.actionPath, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(a === 'mute' ? { a: 'mute', hex, mins: 120 } : { a, hex }),
@@ -426,16 +430,16 @@ async function postAction(a, hex) {
 async function poll() {
   try {
     const url = baselined
-      ? `${BASE_URL}/api/btt/drops/popup?since=${cursor}`
-      : `${BASE_URL}/api/btt/drops/popup`
+      ? `${BASE_URL}${PRODUCT.feedPath}?since=${cursor}`
+      : `${BASE_URL}${PRODUCT.feedPath}`
     const res = await apiFetch(url)
     if (res.status === 403 || res.status === 401) {
-      lastError = 'Not signed in as a BTT user — open the window and log in.'
+      lastError = `Not signed in as ${PRODUCT.audience} — open the window and log in.`
       // Say so once, out loud. Otherwise the app looks like it's working and silently never alerts —
       // the single most likely reason someone reports "I never get notifications".
       if (!signInPrompted && Notification.isSupported()) {
         signInPrompted = true
-        const n = new Notification({ title: 'BTT Drops — sign in to start alerts', body: 'Open BTT Drops and log in with your FireTickets account. Nothing will alert until you do.', icon: appIcon() })
+        const n = new Notification({ title: `${PRODUCT.productName} — sign in to start alerts`, body: `Open ${PRODUCT.productName} and log in with your FireTickets account. Nothing will alert until you do.`, icon: appIcon() })
         n.on('click', () => showWindow(APP_URL))
         n.show()
       }
@@ -451,7 +455,11 @@ async function poll() {
     if (!baselined) { cursor = Number(j.latestId) || 0; baselined = true; saveState(); refreshTray(); return }
 
     const next = Math.max(cursor, Number(j.nextCursor) || 0)
-    const alerts = Array.isArray(j.alerts) ? j.alerts : []
+    // Some feeds carry more than drops on one log (StubTerminal mixes in release alerts and the Austin
+    // watch). product.alertKinds narrows this app to what it is FOR; null takes everything. The cursor
+    // still advances past the rows we skip, so a filtered-out burst can never stall the feed.
+    const kinds = PRODUCT.alertKinds
+    const alerts = (Array.isArray(j.alerts) ? j.alerts : []).filter((a) => !kinds || kinds.includes(a.kind))
     if (next > cursor) { cursor = next; saveState() }
     for (const a of alerts) {
       notifyDrop(a)
@@ -517,7 +525,7 @@ function buildTrayMenu() {
     ...(nagging ? [{ label: `⭐ ${nagging.alert.event_name || nagging.alert.hex} — unacknowledged`, click: () => showWindow(APP_URL) },
                    { label: 'Stop repeating', click: () => stopNag() }] : []),
     { type: 'separator' },
-    { label: 'Open BTT Drops', click: () => showWindow(APP_URL) },
+    { label: `Open ${PRODUCT.productName}`, click: () => showWindow(APP_URL) },
     { label: 'Alert settings & sounds…', click: openSettings },
     { type: 'separator' },
     { label: 'Desktop notifications', type: 'checkbox', checked: !!settings.notifications, click: (mi) => { settings.notifications = mi.checked; saveSettings() } },
@@ -530,17 +538,17 @@ function buildTrayMenu() {
     { label: 'Send a test alert', click: () => sendTestAlert() },
     { label: 'Windows notification settings…', click: () => shell.openExternal('ms-settings:notifications') },
     { label: updateReady ? 'Update ready — restart to install' : 'Check for updates…', click: () => checkForUpdates(true) },
-    { label: 'Quit BTT Drops', click: () => { isQuiting = true; app.quit() } },
+    { label: `Quit ${PRODUCT.productName}`, click: () => { isQuiting = true; app.quit() } },
   ])
 }
 function refreshTray() {
   if (!tray) return
-  tray.setToolTip(nagging ? 'BTT Drops — ⭐ unacknowledged drop' : 'BTT Drops — ' + statusLabel())
+  tray.setToolTip(nagging ? `${PRODUCT.productName} — ⭐ unacknowledged drop` : `${PRODUCT.productName} — ` + statusLabel())
   tray.setContextMenu(buildTrayMenu())
 }
 function createTray() {
   tray = new Tray(trayIcon())
-  tray.setToolTip('BTT Drops')
+  tray.setToolTip(PRODUCT.productName)
   tray.setContextMenu(buildTrayMenu())
   tray.on('click', () => showWindow())
   tray.on('double-click', () => showWindow())
@@ -559,16 +567,16 @@ function setOpenAtLogin(v) {
 // a local-only toast if the post can't be made.
 async function sendTestAlert() {
   try {
-    const r = await apiFetch(BASE_URL + '/api/btt/drops/popup', {
+    const r = await apiFetch(BASE_URL + PRODUCT.testPath, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ test: true }),
     })
     if (r.ok) { setTimeout(poll, 1200); return { ok: true, via: 'feed' } }
-    if (r.status === 403) throw new Error('not signed in as a BTT user')
+    if (r.status === 403) throw new Error(`not signed in as ${PRODUCT.audience}`)
     throw new Error('HTTP ' + r.status)
   } catch (e) {
     notifyDrop({
-      hex: '0000000000000000', kind: 'test', event_name: 'Test Drop — BTT', venue: 'Test Arena', city: 'Testville',
-      event_date: null, tm_url: BASE_URL + '/btt/drops',
+      hex: '0000000000000000', kind: 'test', event_name: `Test Drop — ${PRODUCT.productName}`, venue: 'Test Arena', city: 'Testville',
+      event_date: null, tm_url: BASE_URL + PRODUCT.appPath,
       detail: { groups: [{ s: 'TEST', r: 'A', lo: 1, hi: 4, n: 4, face: 8500 }], totalGroups: 1, totalSeats: 4, faceLo: 8500, faceHi: 8500 },
     })
     return { ok: true, via: 'local', error: e && e.message }
@@ -597,7 +605,7 @@ function wireUpdater() {
     refreshTray()
     if (!Notification.isSupported()) return
     const n = new Notification({
-      title: `BTT Drops ${updateReady} is ready`,
+      title: `${PRODUCT.productName} ${updateReady} is ready`,
       body: 'Click to restart and install. Takes a couple of seconds — no installer to run by hand.',
       icon: appIcon(),
       silent: true,
@@ -612,7 +620,7 @@ function checkForUpdates(interactive) {
   if (updateReady) { if (interactive) installUpdateNow(); return }
   try {
     if (interactive) {
-      autoUpdater.once('update-not-available', () => dialog.showMessageBox({ message: `BTT Drops ${app.getVersion()} is the latest version.` }))
+      autoUpdater.once('update-not-available', () => dialog.showMessageBox({ message: `${PRODUCT.productName} ${app.getVersion()} is the latest version.` }))
       autoUpdater.once('error', (e) => dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: String((e && e.message) || e) }))
     }
     autoUpdater.checkForUpdates()
@@ -625,6 +633,8 @@ ipcMain.handle('bd:get', () => ({
   sounds: listSounds().map(({ id, name, note, kind }) => ({ id, name, note, kind })),
   version: app.getVersion(),
   soundsFolder: customDir(),
+  // Branding for the settings window, so that file stays shared between the two apps too.
+  product: { name: PRODUCT.productName, shortName: PRODUCT.shortName, accent: PRODUCT.accent },
   status: {
     error: lastError,
     soundError: lastSoundError,
@@ -681,7 +691,7 @@ if (!gotLock) {
     loadSettings()
     ensureCustomDir()
 
-    // `BTT Drops.exe --selftest-sound` — play the configured alert, print whether the audio host
+    // `<productName>.exe --selftest-sound` — play the configured alert, print whether the audio host
     // actually managed it, and exit. For diagnosing a machine that pops up but stays silent.
     if (process.argv.includes('--selftest-sound')) {
       ensurePlayer()

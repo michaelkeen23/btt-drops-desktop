@@ -1,10 +1,11 @@
-// Bridge exposed to the HOSTED page (firetickets.ai/btt/drops).
+// Bridge exposed to the HOSTED drop-checker page.
 //
 // Deliberately narrow. The settings window gets its own, much wider preload — a remote origin, even our
 // own, has no business writing the alert configuration.
 const { contextBridge, ipcRenderer } = require('electron')
+const PRODUCT = require('./product')
 
-contextBridge.exposeInMainWorld('bttDropsDesktop', {
+contextBridge.exposeInMainWorld(PRODUCT.bridgeName, {
   isDesktop: true,
   // Let the page raise a native toast (it plays the chosen alert sound too).
   notify: (title, body) => ipcRenderer.send('bd:notify', { title, body }),
