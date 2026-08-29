@@ -128,6 +128,19 @@
   </section>
 
   <section>
+    <h2>Updates</h2>
+    <div class="hint" id="updateHint">New versions install themselves — there is no installer to download and no version to keep track of.</div>
+    <div class="row">
+      <div class="label"><b>Update automatically</b><small>Installs a new version the next time this window isn't in front, then comes straight back</small></div>
+      <input type="checkbox" id="autoUpdate">
+    </div>
+    <div class="row">
+      <div class="label"><b>Tell me when it updates</b><small>Off = updates land completely silently</small></div>
+      <input type="checkbox" id="updateNotice">
+    </div>
+  </section>
+
+  <section>
     <h2>Check it works</h2>
     <div class="hint">Sends a real test alert through the live feed — the same path a genuine drop takes.</div>
     <div class="bar">
@@ -258,11 +271,21 @@
       window.bd.preview(state.settings.sound, state.settings.volume);
     };
 
-    ['notifications', 'soundWhenFocused', 'repeatPriority', 'launchAtStartup', 'startHidden'].forEach(bindCheck);
+    ['notifications', 'soundWhenFocused', 'repeatPriority', 'launchAtStartup', 'startHidden',
+     'autoUpdate', 'updateNotice'].forEach(bindCheck);
     ['repeatSeconds', 'pollSeconds'].forEach(bindNumber);
 
     var st = s.status || {};
     if (st.error) setStatus(st.error, false);
+
+    // Say plainly what the update state is, rather than leaving "automatic" as a promise.
+    var uh = $('updateHint');
+    if (uh) {
+      if (st.updatesSupported === false) uh.textContent = 'This is a development build — it does not self-update.';
+      else if (st.updateReady) uh.innerHTML = '<b>v' + st.updateReady + ' is downloaded</b> and installs itself the next time this window is minimised or in the background. Nothing to click.';
+      else if (st.updateError) uh.textContent = 'On v' + s.version + '. Last update check failed: ' + st.updateError + ' — it retries every 30 minutes.';
+      else uh.textContent = 'On v' + s.version + '. Checks every 30 minutes and installs new versions itself — there is no installer to download.';
+    }
 
     // Two things silence this app that no in-app setting can fix: Windows refusing toasts outright,
     // and the user having turned notifications off here. Say which one it is.

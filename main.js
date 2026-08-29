@@ -69,6 +69,8 @@ const DEFAULTS = {
   repeatMax: 10,
   launchAtStartup: true,
   startHidden: false,
+  autoUpdate: true,         // install a new version by itself, next time the window isn't in front
+  updateNotice: true,       // ...and say so when it does. Off = updates land completely silently.
 }
 let settings = { ...DEFAULTS }
 
@@ -536,11 +538,12 @@ function buildTrayMenu() {
     { label: 'Volume', submenu: volumeMenu() },
     { label: 'Repeat priority alerts', type: 'checkbox', checked: !!settings.repeatPriority, click: (mi) => { settings.repeatPriority = mi.checked; saveSettings(); if (!mi.checked) stopNag() } },
     { label: 'Launch on startup', type: 'checkbox', checked: getOpenAtLogin(), click: (mi) => setOpenAtLogin(mi.checked) },
+    { label: 'Update automatically', type: 'checkbox', checked: settings.autoUpdate !== false, click: (mi) => { settings.autoUpdate = mi.checked; saveSettings(); if (mi.checked && updateReady) scheduleAutoInstall(); refreshTray() } },
     { type: 'separator' },
-    ...(updateReady ? [{ label: `⬆ Restart & install ${updateReady}`, click: installUpdateNow }] : []),
+    ...(updateReady ? [{ label: `⬆ Install ${updateReady} now`, click: installUpdateNow }] : []),
     { label: 'Send a test alert', click: () => sendTestAlert() },
     { label: 'Windows notification settings…', click: () => shell.openExternal('ms-settings:notifications') },
-    { label: updateReady ? 'Update ready — restart to install' : 'Check for updates…', click: () => checkForUpdates(true) },
+    { label: updateReady ? `v${updateReady} downloaded — installs on its own` : `Check for updates… (v${app.getVersion()})`, click: () => checkForUpdates(true) },
     { label: `Quit ${PRODUCT.productName}`, click: () => { isQuiting = true; app.quit() } },
   ])
 }
@@ -588,34 +591,103 @@ async function sendTestAlert() {
 
 // ── Updates ──────────────────────────────────────────────────────────────────
 //
-// Updating from inside the app is the path that WORKS cleanly, and it should be the normal one: the app
-// quits itself and hands over to the installer, so nothing is holding files open. Running the downloaded
-// installer by hand against a live tray app is the awkward case (see build/installer.nsh).
-let updateReady = null   // the downloaded version, waiting for a restart
+// NOBODY SHOULD EVER DOWNLOAD AN INSTALLER AGAIN. Publishing a new GitHub release is the whole delivery
+// mechanism: every running copy notices within CHECK_EVERY_MS, downloads in the background, and installs
+// itself the next time its window isn't in front. The app relaunches, so from the user's side a version
+// they never asked for simply becomes the version they're on.
+//
+// Updating from INSIDE the app is also the only path that works cleanly — the app quits itself, so nothing
+// is holding files open. Running the downloaded installer by hand against a live tray app is the awkward
+// case that needed build/installer.nsh to taskkill it first.
+//
+// The one thing worth being careful about is not yanking the window away mid-use, so the auto-install
+// waits for a moment when the user plainly isn't looking:
+//   • the window is hidden / minimised / not focused, and
+//   • no priority drop is sitting unacknowledged (that alert matters more than the update), and
+//   • the download has settled for QUIET_MS.
+// If the window somehow stays in front for MAX_DEFER_MS, install anyway after a visible 20-second warning —
+// otherwise the one person who never minimises the app is the one person who never gets fixes.
+const CHECK_EVERY_MS = 30 * 60 * 1000    // 30 min — a check is one small latest.yml GET
+const QUIET_MS = 90 * 1000               // settle time after the download completes
+const IDLE_TICK_MS = 30 * 1000           // how often we re-ask "is now a good moment?"
+const MAX_DEFER_MS = 2 * 60 * 60 * 1000  // after this, install even over an in-use window (with warning)
+const FORCED_WARNING_MS = 20 * 1000
+
+let updateReady = null        // the downloaded version, waiting for a restart
+let updateReadyAt = 0         // when it finished downloading
+let autoInstallTimer = null   // the "is now a good moment?" ticker
+let forcedInstallAt = 0       // non-zero once the 20s "restarting" warning has been shown
+let lastUpdateError = null    // last update-check failure, surfaced in the settings window
 
 function installUpdateNow() {
   if (!autoUpdater || !updateReady) return
+  if (autoInstallTimer) { clearInterval(autoInstallTimer); autoInstallTimer = null }
   isQuiting = true
   stopNag()
-  try { autoUpdater.quitAndInstall(false, true) } catch (_) { app.quit() }
+  // isSilent=true runs the NSIS installer with /S so no wizard flashes up; isForceRunAfter=true brings the
+  // app straight back, which is what makes an unattended update invisible rather than "it disappeared".
+  try { autoUpdater.quitAndInstall(true, true) } catch (_) { app.quit() }
+}
+
+// Is the user plainly not using the window right now?
+function windowIsIdle() {
+  if (!win || win.isDestroyed()) return true
+  try { return !win.isVisible() || win.isMinimized() || !win.isFocused() } catch (_) { return true }
+}
+
+function scheduleAutoInstall() {
+  if (autoInstallTimer) clearInterval(autoInstallTimer)
+  autoInstallTimer = setInterval(() => {
+    if (!updateReady) { clearInterval(autoInstallTimer); autoInstallTimer = null; return }
+    if (settings.autoUpdate === false) return          // opted out — the tray item still installs on demand
+    const waited = Date.now() - updateReadyAt
+    if (waited < QUIET_MS) return
+    if (nagging) return                                 // an unacknowledged priority drop outranks the update
+    if (windowIsIdle()) return installUpdateNow()
+    if (waited < MAX_DEFER_MS) return
+    // Still in front two hours later. Warn, then go.
+    if (!forcedInstallAt) {
+      forcedInstallAt = Date.now()
+      if (Notification.isSupported()) {
+        const n = new Notification({
+          title: `${PRODUCT.productName} is updating to ${updateReady}`,
+          body: 'Restarting in 20 seconds. It comes straight back — nothing to click.',
+          icon: appIcon(), silent: true,
+        })
+        n.show()
+      }
+      return
+    }
+    if (Date.now() - forcedInstallAt >= FORCED_WARNING_MS) installUpdateNow()
+  }, IDLE_TICK_MS)
 }
 
 function wireUpdater() {
   if (!autoUpdater) return
   autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true   // belt and braces: a manual Quit also lands the update
   autoUpdater.on('update-downloaded', (info) => {
     updateReady = (info && info.version) || 'a new version'
+    updateReadyAt = Date.now()
+    forcedInstallAt = 0
     refreshTray()
+    scheduleAutoInstall()
+    // Informational only — there is nothing the user has to do. Kept because a version silently changing
+    // under someone is worse than a one-line note saying it's about to.
     if (!Notification.isSupported()) return
+    if (settings.updateNotice === false) return
     const n = new Notification({
       title: `${PRODUCT.productName} ${updateReady} is ready`,
-      body: 'Click to restart and install. Takes a couple of seconds — no installer to run by hand.',
+      body: 'It installs itself the next time this window isn\'t in front. Click to do it now.',
       icon: appIcon(),
       silent: true,
     })
     n.on('click', installUpdateNow)
     n.show()
   })
+  // A failed check must never kill the process — electron-updater emits 'error' as a real EventEmitter
+  // error, which is an unhandled throw if nothing is listening. Offline laptops hit this constantly.
+  autoUpdater.on('error', (e) => { lastUpdateError = String((e && e.message) || e) })
 }
 
 function checkForUpdates(interactive) {
@@ -623,8 +695,15 @@ function checkForUpdates(interactive) {
   if (updateReady) { if (interactive) installUpdateNow(); return }
   try {
     if (interactive) {
-      autoUpdater.once('update-not-available', () => dialog.showMessageBox({ message: `${PRODUCT.productName} ${app.getVersion()} is the latest version.` }))
-      autoUpdater.once('error', (e) => dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: String((e && e.message) || e) }))
+      // Both handlers are torn down whichever one fires. A bare `.once` per click leaked the OTHER handler
+      // every time, so after a few manual checks a later BACKGROUND check would pop a stack of dialogs the
+      // user never asked for.
+      const done = () => { autoUpdater.off('update-not-available', onNone); autoUpdater.off('update-available', done); autoUpdater.off('error', onErr) }
+      const onNone = () => { done(); dialog.showMessageBox({ message: `${PRODUCT.productName} ${app.getVersion()} is the latest version.` }) }
+      const onErr = (e) => { done(); dialog.showMessageBox({ type: 'warning', message: 'Update check failed', detail: String((e && e.message) || e) }) }
+      autoUpdater.once('update-not-available', onNone)
+      autoUpdater.once('update-available', done)   // it's downloading — the 'ready' toast takes it from here
+      autoUpdater.once('error', onErr)
     }
     autoUpdater.checkForUpdates()
   } catch (_) {}
@@ -647,6 +726,9 @@ ipcMain.handle('bd:get', () => ({
     openAtLogin: getOpenAtLogin(),
     // If Windows itself can't show toasts, no amount of app configuration will help — surface it.
     notificationsSupported: Notification.isSupported(),
+    updateReady,
+    updateError: lastUpdateError,
+    updatesSupported: !!autoUpdater,
   },
 }))
 ipcMain.handle('bd:sounds-folder', () => { shell.openPath(ensureCustomDir()); return customDir() })
@@ -657,6 +739,8 @@ ipcMain.handle('bd:set', (_e, patch) => {
     const before = settings.pollSeconds
     settings = { ...settings, ...patch }
     if ('launchAtStartup' in patch) setOpenAtLogin(!!patch.launchAtStartup)
+    // Turning auto-update back on with a build already downloaded shouldn't wait for the next release.
+    if ('autoUpdate' in patch && patch.autoUpdate && updateReady) scheduleAutoInstall()
     saveSettings(); refreshTray()
     if (settings.pollSeconds !== before) startPolling()
   }
@@ -720,8 +804,9 @@ if (!gotLock) {
 
     if (autoUpdater) {
       wireUpdater()
-      checkForUpdates(false)
-      setInterval(() => checkForUpdates(false), 6 * 60 * 60 * 1000)
+      // First check is delayed a few seconds so it can't compete with the window load and the first poll.
+      setTimeout(() => checkForUpdates(false), 8000)
+      setInterval(() => checkForUpdates(false), CHECK_EVERY_MS)
     }
 
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); else showWindow() })
