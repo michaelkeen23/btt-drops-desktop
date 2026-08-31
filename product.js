@@ -16,6 +16,13 @@ module.exports = {
   baseUrl: 'https://www.firetickets.ai',
   appPath: '/btt/drops',
 
+  // Custom URL scheme the toast's buttons activate. Windows launches the app with the URL in argv, the
+  // single-instance lock hands it to the running copy, and main.js acts on it — which is how a toast
+  // button can do something IN the app instead of just opening a browser tab.
+  protocol: 'bttdrops',
+  // Deep link into one event's expanded view (the page reads ?hex= on load).
+  dropPath: (hex) => `/btt/drops?hex=${String(hex || '').toUpperCase()}`,
+
   // The alert feed and the one-tap actions the notification buttons call.
   feedPath: '/api/btt/drops/popup',
   testPath: '/api/btt/drops/popup',        // POST { test: true } inserts a test row

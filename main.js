@@ -251,6 +251,8 @@ function trayIcon() {
 // The only pages this window is allowed to be on: the drop checker itself, and whatever is needed to
 // sign in to it. Everything else is somebody else's page and belongs in a browser.
 const IN_APP_PATHS = PRODUCT.inAppPaths
+const PAGE_STALE_MS = 30 * 60 * 1000   // re-fetch the hosted page when the window returns after this long
+let pageLoadedAt = 0                    // when the hosted page last finished loading
 function isOurHost(url) {
   try { return new URL(url).host === new URL(APP_URL).host } catch (_) { return false }
 }
@@ -316,6 +318,19 @@ function createWindow() {
     }
   })
 
+  // THE APP UPDATES ITSELF; THE PAGE HAS TO AS WELL. This window loads the drop checker exactly once and
+  // then lives in the tray for days, so a change shipped to firetickets.ai could sit unseen indefinitely —
+  // the app looked stale when it was perfectly up to date, and the only cure was knowing to press Ctrl+R.
+  // Bringing the window up after it has been away for a while re-fetches the page.
+  //
+  // Only ever on 'show', i.e. the user was NOT looking at it: reloading discards in-progress editor state
+  // on the drop checker (targets, row boxes), which would be maddening mid-edit and is empty here.
+  win.webContents.on('did-finish-load', () => { pageLoadedAt = Date.now() })
+  win.on('show', () => {
+    if (!pageLoadedAt || Date.now() - pageLoadedAt < PAGE_STALE_MS) return
+    try { if (isAppUrl(win.webContents.getURL())) win.webContents.reload() } catch (_) {}
+  })
+
   win.on('close', (e) => { if (!isQuiting) { e.preventDefault(); win.hide() } })
 }
 
@@ -349,19 +364,80 @@ function describe(a) {
   const groups = Array.isArray(d.groups) ? d.groups : []
   const where = [a.venue, a.city].filter(Boolean).join(' · ')
   const lines = []
+  // Money is ALL-IN — what the seats actually cost. faceLo/faceHi keep their old NAMES in the payload but
+  // carry the all-in range; d.allIn === false marks a pre-2026-08-31 row that really is face value.
+  const unit = d.allIn === false ? ' face' : ' all-in'
+  const gp = (g) => (g.allin != null && g.allin > 0 ? g.allin : g.face)
   if (where || a.event_date) lines.push([a.event_date, where].filter(Boolean).join(' · '))
   if (d.totalSeats != null) {
-    const price = d.faceLo ? ` · ${money(d.faceLo)}${d.faceHi && d.faceHi !== d.faceLo ? '–' + money(d.faceHi) : ''} face` : ''
+    const price = d.faceLo ? ` · ${money(d.faceLo)}${d.faceHi && d.faceHi !== d.faceLo ? '–' + money(d.faceHi) : ''}${unit}` : ''
     lines.push(`${d.totalSeats} seat${d.totalSeats === 1 ? '' : 's'} in ${d.totalGroups || groups.length} group${(d.totalGroups || groups.length) === 1 ? '' : 's'}${price}`)
   }
   for (const g of groups.slice(0, 3)) {
+    const tag = g.g ? ` [${g.g}]` : ''
     lines.push(g.ga
-      ? `${g.s} (GA) — ${g.n} new`
-      : `Sec ${g.s} Row ${g.r} — ${g.n === 1 ? `seat ${g.lo}` : `seats ${g.lo}–${g.hi} (${g.n})`}${g.face ? ' · ' + money(g.face) : ''}`)
+      ? `${g.s} (GA) — ${g.n} new${gp(g) ? ' · ' + money(gp(g)) : ''}${tag}`
+      : `Sec ${g.s} Row ${g.r} — ${g.n === 1 ? `seat ${g.lo}` : `seats ${g.lo}–${g.hi} (${g.n})`}${gp(g) ? ' · ' + money(gp(g)) : ''}${tag}`)
   }
   if (groups.length > 3) lines.push(`…and ${(d.totalGroups || groups.length) - 3} more`)
+  // Whatever is written on the watch group that caught this is usually the actual instruction.
+  for (const n of [...new Set(groups.map((g) => (g.gn || '').trim()).filter(Boolean))].slice(0, 2)) lines.push('📝 ' + n)
   if (d.notes) lines.push('📝 ' + d.notes)
   return lines.join('\n')
+}
+
+// ── The toast ────────────────────────────────────────────────────────────────
+// A drop toast is STICKY: it sits in the corner until somebody closes it. The stock Electron toast fades
+// out after a few seconds, which meant a drop that landed while you were in another room was gone by the
+// time you looked — the alert existed and nobody ever saw it. Windows can do exactly what's wanted here,
+// but only through raw toast XML: scenario="reminder" keeps a toast on screen until it is dismissed or a
+// button is pressed. Electron's own options can't express it, so on Windows we hand it the XML.
+//
+// The buttons are `activationType="protocol"`, which means Windows itself follows the URL. That is the
+// only way to tell the buttons apart: Electron's Windows toast fires one undifferentiated 'click' for
+// every activation, so two foreground buttons would be indistinguishable. https:// goes to the browser,
+// <scheme>:// comes back into this app (see handleDeepLink).
+const xmlEsc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+
+const SCHEME = PRODUCT.protocol || 'firetickets'
+const deepLink = (kind, hex) => `${SCHEME}://${kind}?hex=${encodeURIComponent(String(hex || '').toUpperCase())}`
+
+// The toast image is loaded by WINDOWS, not by us, so it has to be a real file on disk. In the packaged
+// build assets/ lives inside app.asar, which the shell cannot open — so unpack the icon once into
+// userData and point the toast at that. Returns null if anything goes wrong; the toast just loses its
+// logo, which is not worth failing an alert over.
+let toastIconCache
+function toastIconPath() {
+  if (toastIconCache !== undefined) return toastIconCache
+  toastIconCache = null
+  try {
+    const out = path.join(app.getPath('userData'), 'toast-icon.png')
+    if (!fs.existsSync(out)) {
+      const src = iconPath('icon.png')
+      if (!src) return toastIconCache
+      const img = nativeImage.createFromPath(src)
+      if (img.isEmpty()) return toastIconCache
+      fs.writeFileSync(out, img.toPNG())
+    }
+    toastIconCache = out
+  } catch (_) { toastIconCache = null }
+  return toastIconCache
+}
+
+function toastXmlFor({ title, body, iconPath, buttons }) {
+  // ToastGeneric takes 4 <text> elements at most, the first being the title — so 3 body lines.
+  const lines = String(body || '').split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3)
+  const texts = lines.map((l) => `<text>${xmlEsc(l)}</text>`).join('')
+  const img = iconPath ? `<image placement="appLogoOverride" hint-crop="none" src="file:///${xmlEsc(String(iconPath).replace(/\\/g, '/'))}"/>` : ''
+  const actions = buttons.map((b) => `<action content="${xmlEsc(b.text)}" activationType="protocol" arguments="${xmlEsc(b.url)}"/>`).join('')
+  // The BODY is left on the default foreground activation so Electron's own 'click' handler fires — that
+  // path works whether or not the <scheme>:// registration took. Only the buttons use protocol activation,
+  // which is what makes them individually distinguishable.
+  return `<toast scenario="reminder">`
+    + `<visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text>${texts}${img}</binding></visual>`
+    + `<actions>${actions}</actions>`
+    + `</toast>`
 }
 
 function notifyDrop(a, { isNag = false } = {}) {
@@ -372,26 +448,66 @@ function notifyDrop(a, { isNag = false } = {}) {
   const title = isTest
     ? '🧪 Test — not a real drop'
     : `${prio ? '⭐ PRIORITY · ' : ''}🎯 ${isNag ? 'Still unacknowledged: ' : 'Seat Drop — '}${a.event_name || a.hex}`
+  const body = describe(a) || 'Seats just dropped.'
 
-  const n = new Notification({
-    title,
-    body: describe(a) || 'Seats just dropped.',
-    icon: appIcon(),
-    silent: true,                       // we play the chosen sound ourselves
-    timeoutType: prio ? 'never' : 'default',
-    actions: [{ type: 'button', text: 'Open on Ticketmaster' }, { type: 'button', text: 'Mute 2h' }],
-    closeButtonText: 'Dismiss',
-  })
-  n.on('click', () => showWindow(APP_URL))
-  n.on('action', (_e, index) => {
-    if (index === 0 && a.tm_url) shell.openExternal(a.tm_url)
-    else if (index === 1) postAction('mute', a.hex).then(() => stopNag(a.hex))
-  })
+  // Labelled for what they DO, not where they go — the first one is the reason the toast exists.
+  const buttons = [
+    { text: 'Open drop details', url: deepLink('drop', a.hex) },
+    ...(a.tm_url ? [{ text: 'View on Ticketmaster', url: a.tm_url }] : []),
+    { text: 'Mute 2h', url: deepLink('mute', a.hex) },
+  ]
+
+  let n = null
+  if (process.platform === 'win32') {
+    try {
+      n = new Notification({ toastXml: toastXmlFor({ title, body, iconPath: toastIconPath(), buttons }), silent: true })
+    } catch (e) { n = null }
+  }
+  if (!n) {
+    // macOS/Linux, or a toastXml the platform refused. timeoutType:'never' is the closest the portable
+    // API gets to sticky; the buttons live on the page and the tray instead.
+    n = new Notification({
+      title, body, icon: appIcon(),
+      silent: true,                     // we play the chosen sound ourselves
+      timeoutType: 'never',
+      actions: [{ type: 'button', text: 'Open drop details' }, { type: 'button', text: 'View on Ticketmaster' }],
+      closeButtonText: 'Dismiss',
+    })
+    n.on('action', (_e, index) => {
+      if (index === 1 && a.tm_url) shell.openExternal(a.tm_url)
+      else showWindow(dropUrl(a.hex))
+    })
+  }
+  // Clicking the toast BODY (not a button) always opens the event in the app. With toastXml this comes
+  // through the protocol launch attribute; the handler is idempotent either way.
+  n.on('click', () => showWindow(dropUrl(a.hex)))
   n.show()
 
   const focused = !!(win && !win.isDestroyed() && win.isFocused())
   if (!focused || settings.soundWhenFocused) playSound()
 }
+
+// The event's own page in the drop checker. Falls back to the app's home when a nag has no hex.
+function dropUrl(hex) {
+  const H = String(hex || '').toUpperCase()
+  if (!/^[0-9A-F]{16}$/.test(H) || typeof PRODUCT.dropPath !== 'function') return APP_URL
+  return BASE_URL + PRODUCT.dropPath(H)
+}
+
+// Act on a <scheme>://… URL from a toast button (or anywhere else Windows hands us one).
+function handleDeepLink(raw) {
+  let u
+  try { u = new URL(String(raw)) } catch (_) { return false }
+  if (u.protocol.replace(':', '').toLowerCase() !== SCHEME) return false
+  const kind = (u.hostname || u.pathname.replace(/^\/+/, '')).toLowerCase()
+  const hex = (u.searchParams.get('hex') || '').toUpperCase()
+  if (kind === 'mute') { postAction('mute', hex).then(() => stopNag(hex)); return true }
+  if (kind === 'ack') { postAction('ack', hex).then(() => stopNag(hex)); return true }
+  showWindow(dropUrl(hex))
+  stopNag(hex)
+  return true
+}
+const deepLinkFromArgv = (argv) => (argv || []).find((s) => typeof s === 'string' && s.toLowerCase().startsWith(SCHEME + '://')) || null
 
 // Priority events keep alerting until someone acknowledges them — the desktop mirror of the drop-checker's
 // own nag loop, so a big drop can't be missed just because the first toast was dismissed by accident.
@@ -531,6 +647,9 @@ function buildTrayMenu() {
                    { label: 'Stop repeating', click: () => stopNag() }] : []),
     { type: 'separator' },
     { label: `Open ${PRODUCT.productName}`, click: () => showWindow(APP_URL) },
+    // Manual escape hatch for the same staleness the 'show' reload handles automatically — and the answer
+    // to "is this page actually current?" without anyone having to know Ctrl+R exists.
+    { label: 'Reload the drop checker', click: () => { showWindow(); try { win.webContents.reload() } catch (_) {} } },
     { label: 'Alert settings & sounds…', click: openSettings },
     { type: 'separator' },
     { label: 'Desktop notifications', type: 'checkbox', checked: !!settings.notifications, click: (mi) => { settings.notifications = mi.checked; saveSettings() } },
@@ -772,11 +891,26 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => showWindow())
+  // Windows launches a SECOND copy of the exe to deliver a <scheme>:// URL. The lock bounces it straight
+  // back here with its argv, which is how a toast button reaches the copy that is already running.
+  app.on('second-instance', (_e, argv) => {
+    const link = deepLinkFromArgv(argv)
+    if (link && handleDeepLink(link)) return
+    showWindow()
+  })
+  // macOS delivers the same thing as an event rather than argv.
+  app.on('open-url', (e, url) => { e.preventDefault(); handleDeepLink(url) })
 
   app.whenReady().then(() => {
     loadSettings()
     ensureCustomDir()
+
+    // Claim <scheme>:// so the toast buttons resolve to this app. Harmless to repeat on every launch, and
+    // it self-heals after a reinstall moves the exe. A failure here only costs the buttons, never the app.
+    try {
+      if (app.isPackaged) app.setAsDefaultProtocolClient(SCHEME)
+      else app.setAsDefaultProtocolClient(SCHEME, process.execPath, [path.resolve(process.argv[1] || '.')])
+    } catch (_) {}
 
     // `<productName>.exe --selftest-sound` — play the configured alert, print whether the audio host
     // actually managed it, and exit. For diagnosing a machine that pops up but stays silent.
@@ -801,6 +935,10 @@ if (!gotLock) {
     startPolling()
 
     if (process.argv.includes('--hidden') && win) win.hide()
+
+    // Cold start FROM a toast button: the URL is in our own argv, not a second instance's.
+    const coldLink = deepLinkFromArgv(process.argv)
+    if (coldLink) setTimeout(() => handleDeepLink(coldLink), 300)
 
     if (autoUpdater) {
       wireUpdater()
