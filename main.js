@@ -57,6 +57,11 @@ let lastPollAt = 0
 let nagTimer = null
 let nagging = null          // { alert, until } — priority alert still un-acknowledged
 let signInPrompted = false  // "sign in" toast is shown once per signed-out streak, not every poll
+// Alert-health, surfaced in the tray and by --selftest-alert. "It's not popping up" is the single most
+// common report about this app and there was nothing to look at when it happened.
+let lastToastAt = 0         // last time we ASKED the OS to show a drop toast
+let lastToastShownAt = 0    // last time the OS confirmed it actually appeared
+let lastToastError = null
 
 const DEFAULTS = {
   notifications: true,
@@ -401,7 +406,8 @@ const xmlEsc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 
 const SCHEME = PRODUCT.protocol || 'firetickets'
-const deepLink = (kind, hex) => `${SCHEME}://${kind}?hex=${encodeURIComponent(String(hex || '').toUpperCase())}`
+const deepLink = (kind, hex, batch) => `${SCHEME}://${kind}?hex=${encodeURIComponent(String(hex || '').toUpperCase())}`
+  + (batch ? `&b=${encodeURIComponent(String(batch))}` : '')
 
 // The toast image is loaded by WINDOWS, not by us, so it has to be a real file on disk. In the packaged
 // build assets/ lives inside app.asar, which the shell cannot open — so unpack the icon once into
@@ -440,9 +446,26 @@ function toastXmlFor({ title, body, iconPath, buttons }) {
     + `</toast>`
 }
 
-function notifyDrop(a, { isNag = false } = {}) {
+// The last alert raised per event, so a toast can be PUT BACK after it is clicked through. Windows
+// dismisses a toast the moment any button on it is activated -- that is OS behaviour, not something the
+// app chooses -- so "stays up until I X it" has to mean re-raising it once the click has been handled.
+const lastAlertByHex = new Map()
+// ...and a guard so re-raising can never turn into a loop of its own making.
+const reRaisedAt = new Map()
+
+function reRaiseToast(hex) {
+  const H = String(hex || '').toUpperCase()
+  const a = lastAlertByHex.get(H)
+  if (!a) return
+  if (Date.now() - (reRaisedAt.get(H) || 0) < 3000) return   // one re-raise per activation, not per event
+  reRaisedAt.set(H, Date.now())
+  notifyDrop(a, { isNag: false, silentReRaise: true })
+}
+
+function notifyDrop(a, { isNag = false, silentReRaise = false } = {}) {
   if (!settings.notifications) return
   if (!Notification.isSupported()) return
+  if (a && a.hex) lastAlertByHex.set(String(a.hex).toUpperCase(), a)
   const isTest = a.kind === 'test'
   const prio = !!(a.detail && a.detail.priority)
   const title = isTest
@@ -451,47 +474,65 @@ function notifyDrop(a, { isNag = false } = {}) {
   const body = describe(a) || 'Seats just dropped.'
 
   // Labelled for what they DO, not where they go — the first one is the reason the toast exists.
+  const batch = (a.detail && a.detail.batchId) || null
   const buttons = [
-    { text: 'Open drop details', url: deepLink('drop', a.hex) },
+    { text: 'Open drop details', url: deepLink('drop', a.hex, batch) },
     ...(a.tm_url ? [{ text: 'View on Ticketmaster', url: a.tm_url }] : []),
     { text: 'Mute 2h', url: deepLink('mute', a.hex) },
   ]
 
-  let n = null
-  if (process.platform === 'win32') {
-    try {
-      n = new Notification({ toastXml: toastXmlFor({ title, body, iconPath: toastIconPath(), buttons }), silent: true })
-    } catch (e) { n = null }
-  }
-  if (!n) {
-    // macOS/Linux, or a toastXml the platform refused. timeoutType:'never' is the closest the portable
-    // API gets to sticky; the buttons live on the page and the tray instead.
-    n = new Notification({
+  // Build the plain, portable notification up front — it is both the non-Windows path AND the safety net
+  // for the custom one. A malformed toastXml does not throw: Windows simply shows NOTHING, which looks
+  // exactly like "the alerts stopped working" and is the worst possible failure for this app. So if the
+  // custom toast has not reported 'show' shortly after we raise it, the plain one goes out instead.
+  const makePlain = () => {
+    const p = new Notification({
       title, body, icon: appIcon(),
       silent: true,                     // we play the chosen sound ourselves
       timeoutType: 'never',
       actions: [{ type: 'button', text: 'Open drop details' }, { type: 'button', text: 'View on Ticketmaster' }],
       closeButtonText: 'Dismiss',
     })
-    n.on('action', (_e, index) => {
+    p.on('action', (_e, index) => {
       if (index === 1 && a.tm_url) shell.openExternal(a.tm_url)
-      else showWindow(dropUrl(a.hex))
+      else { showWindow(dropUrl(a.hex, batch)); reRaiseToast(a.hex) }
     })
+    p.on('click', () => { showWindow(dropUrl(a.hex, batch)); reRaiseToast(a.hex) })
+    return p
   }
-  // Clicking the toast BODY (not a button) always opens the event in the app. With toastXml this comes
-  // through the protocol launch attribute; the handler is idempotent either way.
-  n.on('click', () => showWindow(dropUrl(a.hex)))
-  n.show()
 
+  let n = null
+  if (process.platform === 'win32') {
+    try {
+      n = new Notification({ toastXml: toastXmlFor({ title, body, iconPath: toastIconPath(), buttons }), silent: true })
+      let shown = false
+      n.on('show', () => { shown = true; lastToastShownAt = Date.now() })
+      setTimeout(() => {
+        if (shown) return
+        try { makePlain().show() } catch (_) {}
+        lastToastError = 'custom toast did not display — fell back to the plain notification'
+      }, 1500)
+    } catch (e) { n = null; lastToastError = String((e && e.message) || e) }
+  }
+  // macOS/Linux, or a toastXml the platform refused outright. timeoutType:'never' is the closest the
+  // portable API gets to sticky; the buttons live on the page and the tray instead.
+  if (!n) n = makePlain()
+  n.show()
+  lastToastAt = Date.now()
+
+  // A re-raise is the SAME alert coming back after you clicked it — it must not make a noise a second
+  // time, or every click would be punished with the drop sound.
+  if (silentReRaise) return
   const focused = !!(win && !win.isDestroyed() && win.isFocused())
   if (!focused || settings.soundWhenFocused) playSound()
 }
 
-// The event's own page in the drop checker. Falls back to the app's home when a nag has no hex.
-function dropUrl(hex) {
+// The event's own page in the drop checker, pointed at the SPECIFIC drop when we know which one — the
+// page announces it and pulses those exact seats on the map. Falls back to the app's home without a hex.
+function dropUrl(hex, batch) {
   const H = String(hex || '').toUpperCase()
   if (!/^[0-9A-F]{16}$/.test(H) || typeof PRODUCT.dropPath !== 'function') return APP_URL
-  return BASE_URL + PRODUCT.dropPath(H)
+  return BASE_URL + PRODUCT.dropPath(H, batch)
 }
 
 // Act on a <scheme>://… URL from a toast button (or anywhere else Windows hands us one).
@@ -501,10 +542,14 @@ function handleDeepLink(raw) {
   if (u.protocol.replace(':', '').toLowerCase() !== SCHEME) return false
   const kind = (u.hostname || u.pathname.replace(/^\/+/, '')).toLowerCase()
   const hex = (u.searchParams.get('hex') || '').toUpperCase()
-  if (kind === 'mute') { postAction('mute', hex).then(() => stopNag(hex)); return true }
+  const batch = u.searchParams.get('b') || null
+  // Mute and Delete are decisions — the toast has served its purpose and should go. Everything else is a
+  // click-THROUGH, and the toast comes back so it is still there when you look up from the page.
+  if (kind === 'mute') { postAction('mute', hex).then(() => stopNag(hex)); lastAlertByHex.delete(hex); return true }
   if (kind === 'ack') { postAction('ack', hex).then(() => stopNag(hex)); return true }
-  showWindow(dropUrl(hex))
+  showWindow(dropUrl(hex, batch))
   stopNag(hex)
+  reRaiseToast(hex)
   return true
 }
 const deepLinkFromArgv = (argv) => (argv || []).find((s) => typeof s === 'string' && s.toLowerCase().startsWith(SCHEME + '://')) || null
@@ -651,6 +696,36 @@ function buildTrayMenu() {
     // to "is this page actually current?" without anyone having to know Ctrl+R exists.
     { label: 'Reload the drop checker', click: () => { showWindow(); try { win.webContents.reload() } catch (_) {} } },
     { label: 'Alert settings & sounds…', click: openSettings },
+    // The same end-to-end check as --selftest-alert, for anyone who is never going to open a terminal:
+    // one real toast, one real sound, and a dialog saying whether the OS actually did both.
+    {
+      label: 'Test an alert now',
+      click: () => {
+        const fake = {
+          id: 0, hex: '0000000000000000', kind: 'test', tm_url: 'https://www.ticketmaster.com/',
+          event_name: 'Test alert — not a real drop', venue: 'Test Arena', city: 'Testville', event_date: null,
+          detail: { groups: [{ s: 'TEST', r: 'A', lo: 1, hi: 4, n: 4, face: 8500, allin: 11200, g: 'Test' }], totalGroups: 1, totalSeats: 4, faceLo: 11200, faceHi: 11200, allIn: true, batchId: 'selftest' },
+        }
+        let played = null
+        soundProbe = (r) => { played = r }
+        notifyDrop(fake)
+        setTimeout(() => {
+          const shown = lastToastShownAt >= lastToastAt && lastToastAt > 0
+          const lines = [
+            `Pop-up: ${shown ? 'shown' : 'NOT shown'}${lastToastError ? ' — ' + lastToastError : ''}`,
+            `Sound:  ${played && played.ok ? 'played' : 'NOT played' + ((played && played.error) ? ' — ' + played.error : '')}`,
+            !settings.notifications ? '\nDesktop notifications are switched OFF in this menu.' : '',
+            shown ? '' : '\nIf Windows Focus assist / Do not disturb is on, or notifications are blocked for this app in Windows Settings, nothing will appear.',
+          ].filter(Boolean)
+          dialog.showMessageBox({
+            type: (shown && played && played.ok) ? 'info' : 'warning',
+            title: `${PRODUCT.productName} — alert test`,
+            message: (shown && played && played.ok) ? 'Alerts are working.' : 'Something is wrong with alerts.',
+            detail: lines.join('\n'),
+          })
+        }, 3500)
+      },
+    },
     { type: 'separator' },
     { label: 'Desktop notifications', type: 'checkbox', checked: !!settings.notifications, click: (mi) => { settings.notifications = mi.checked; saveSettings() } },
     { label: 'Alert sound', submenu: soundMenu() },
@@ -924,6 +999,35 @@ if (!gotLock) {
       soundProbe = done
       setTimeout(() => playSound(), 400)
       setTimeout(() => done(null), 8000)
+      return
+    }
+
+    // `<productName>.exe --selftest-alert` — raise a REAL drop toast and play the REAL sound, then report
+    // what the OS actually did with each. --selftest-sound only ever proved the audio half, so "it makes a
+    // noise but nothing pops up" had no answer. This exercises the exact path a live drop takes.
+    if (process.argv.includes('--selftest-alert')) {
+      ensurePlayer()
+      const fake = {
+        id: 0, hex: '0000000000000000', kind: 'test', tm_url: 'https://www.ticketmaster.com/',
+        event_name: 'Self-test — not a real drop', venue: 'Test Arena', city: 'Testville', event_date: null,
+        detail: { groups: [{ s: 'TEST', r: 'A', lo: 1, hi: 4, n: 4, face: 8500, allin: 11200, g: 'Self-test' }], totalGroups: 1, totalSeats: 4, faceLo: 11200, faceHi: 11200, allIn: true, batchId: 'selftest' },
+      }
+      console.log('notifications  :', Notification.isSupported() ? 'supported' : 'NOT SUPPORTED BY THIS OS')
+      console.log('setting        :', settings.notifications ? 'on' : 'OFF — nothing will ever pop up')
+      console.log('appUserModelId :', APP_ID)
+      console.log('toast icon     :', toastIconPath() || 'none (toast still shows)')
+      console.log('sound          :', settings.sound, '->', soundPath(settings.sound) || 'NOTHING')
+      let played = null
+      soundProbe = (r) => { played = r }
+      notifyDrop(fake)
+      setTimeout(() => {
+        const shown = lastToastShownAt >= lastToastAt && lastToastAt > 0
+        console.log('toast displayed:', shown ? 'YES' : 'NO' + (lastToastError ? ' — ' + lastToastError : ' — the OS never confirmed it'))
+        console.log('sound played   :', played && played.ok ? 'YES' : 'NO — ' + ((played && played.error) || 'no response from the audio host'))
+        const ok = shown && played && played.ok
+        console.log(ok ? '\nALERTS ARE WORKING.' : '\nSOMETHING IS WRONG — see the lines above.')
+        app.exit(ok ? 0 : 1)
+      }, 4000)
       return
     }
 

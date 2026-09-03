@@ -20,8 +20,10 @@ module.exports = {
   // single-instance lock hands it to the running copy, and main.js acts on it — which is how a toast
   // button can do something IN the app instead of just opening a browser tab.
   protocol: 'bttdrops',
-  // Deep link into one event's expanded view (the page reads ?hex= on load).
-  dropPath: (hex) => `/btt/drops?hex=${String(hex || '').toUpperCase()}`,
+  // Deep link into one event's expanded view (the page reads ?hex= on load). With a batch id the page
+  // also announces exactly what dropped and pulses those seats on the map.
+  dropPath: (hex, batch) => `/btt/drops?hex=${String(hex || '').toUpperCase()}`
+    + (batch ? `&drop=${encodeURIComponent(String(batch))}` : ''),
 
   // The alert feed and the one-tap actions the notification buttons call.
   feedPath: '/api/btt/drops/popup',
